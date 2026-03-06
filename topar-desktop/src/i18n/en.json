@@ -1,0 +1,96 @@
+{
+  "app": {
+    "title": "Topar Desktop Parser",
+    "subtitle": "Parse → Map → Review → Sync",
+    "newParse": "New Parse"
+  },
+  "tabs": {
+    "parse": "1. Parse",
+    "map": "2. Map Fields",
+    "review": "3. Review",
+    "sync": "4. Sync"
+  },
+  "parse": {
+    "title": "Parse Products",
+    "sourceUrl": "Source URL",
+    "sourceUrlHint": "Sitemap URL or direct product page",
+    "limit": "Limit",
+    "limitHint": "0 = unlimited",
+    "workers": "Workers",
+    "workersHint": "Concurrent requests (1-4)",
+    "requestsPerSec": "Requests/sec",
+    "requestsPerSecHint": "Rate limit (1.0-20.0)",
+    "maxSitemaps": "Max Sitemaps",
+    "maxSitemapsHint": "Maximum sitemap files to process",
+    "startParsing": "Start Parsing",
+    "progress": {
+      "title": "Parsing Progress",
+      "status": "Status",
+      "idle": "Idle",
+      "running": "Running",
+      "finished": "Finished",
+      "failed": "Failed",
+      "currentUrl": "Current URL",
+      "discovered": "Discovered URLs",
+      "parsed": "Parsed Products",
+      "retries": "Rate Limit Retries"
+    },
+    "errors": {
+      "failed": "Failed to start parsing",
+      "url": "Please enter a valid URL"
+    }
+  },
+  "mapping": {
+    "title": "Field Mapping",
+    "detected": "Detected Fields",
+    "target": "Target Fields",
+    "source": "Source",
+    "constant": "Constant Value",
+    "profileName": "Profile Name",
+    "saveProfile": "Save Mapping Profile",
+    "loadProfile": "Load Profile",
+    "noFields": "No fields detected. Please parse products first.",
+    "errors": {
+      "saveFailed": "Failed to save mapping profile",
+      "loadFailed": "Failed to load mapping profile"
+    }
+  },
+  "review": {
+    "title": "Review Products",
+    "showing": "Showing {{count}} products",
+    "noProducts": "No products to review. Please parse products first.",
+    "sourceUrl": "Source URL",
+    "data": "Data"
+  },
+  "sync": {
+    "title": "Sync to Database",
+    "options": "Sync Options",
+    "eksmo": "Sync to Eksmo",
+    "main": "Sync to Main Database",
+    "mappingName": "Mapping Name",
+    "saveMapping": "Save Mapping Profile",
+    "compare": "Compare with Remote",
+    "syncNow": "Sync to Database",
+    "comparison": {
+      "title": "Comparison Results",
+      "total": "Total",
+      "new": "New",
+      "changed": "Changed",
+      "unchanged": "Unchanged"
+    },
+    "result": {
+      "title": "Sync Complete",
+      "totalRecords": "Total Records",
+      "newCount": "New Count",
+      "updatedCount": "Updated Count",
+      "unchangedCount": "Unchanged Count",
+      "failedCount": "Failed Count"
+    },
+    "errors": {
+      "compareFailed": "Failed to compare with remote",
+      "syncFailed": "Failed to sync to database",
+      "noMapping": "Please configure field mapping first"
+    },
+    "stop": "Stop Sync"
+  }
+}

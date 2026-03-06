@@ -1,0 +1,68 @@
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+.claude/
+
+# Environment
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies and build outputs
+node_modules/
+dist/
+dist-ssr/
+build/
+coverage/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Tauri / Rust
+src-tauri/target/
+topar-desktop/src-tauri/target/
+
+# Nested repository (avoid broken gitlink commit)
+integration/
+
+# Compiled binaries
+backend/backend_server
+backend/convert_client_products
+backend/convert_client_products_bin
+
+# Runtime uploads
+backend/uploads/
+
+# Local databases
+*.db
+*.db-shm
+*.db-wal
+
+# Generated/local parser data dumps
+book_chitai_products.json
+chitai-gorod-categories.json
+converted_eksmo_products.json
+converted_main_products.csv
+products_asaxiy_part1.json
+products_asaxiy_part2.json
+products_book_full.json
+products_hilolnashr_full.json
+products_kansler_full.json
+products_kanstik_full.json
+products_qamar.json

@@ -1,0 +1,57 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      # Docker-to-Docker MongoDB connection (service/container host: mongodb).
+      # Override with MONGODB_URI_DOCKER if your DB name/user/pass differ.
+      MONGODB_URI: ${MONGODB_URI_DOCKER:-mongodb://topar_admin:topar_password_2024@mongodb:27017/topar_db?authSource=admin}
+      UPLOADS_DIR: /app/uploads
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_ADDR: ${REDIS_ADDR:-redis:6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: ${REDIS_DB:-0}
+      REDIS_CACHE_TTL: ${REDIS_CACHE_TTL:-0}
+    networks:
+      - default
+      - shared_mongo
+    volumes:
+      - ./chitai-gorod-categories.json:/app/chitai-gorod-categories.json:ro
+      - ./uploads:/app/uploads
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:3005:3005"
+    restart: unless-stopped
+
+networks:
+  shared_mongo:
+    external: true
+    # Set to the network where your existing mongodb container is running.
+    # Example: topar_topar-network
+    name: ${MONGO_DOCKER_NETWORK:-topar_topar-network}
+
+volumes:
+  redis-data:

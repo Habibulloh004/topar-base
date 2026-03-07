@@ -499,6 +499,19 @@ func (s *ParserAppService) discoverCandidateURLs(
 
 	seenSitemaps := map[string]struct{}{}
 	seenURLs := map[string]struct{}{}
+
+	if apiURLs, apiErr := s.discoverBookUZCatalogURLs(ctx, sourceURL, limit, maxURLs, limiter); apiErr == nil {
+		for _, item := range apiURLs {
+			if item == "" {
+				continue
+			}
+			seenURLs[item] = struct{}{}
+			if len(seenURLs) >= maxURLs {
+				break
+			}
+		}
+	}
+
 	queue := append([]string{}, candidateSitemaps...)
 
 	for len(queue) > 0 && len(seenSitemaps) < maxSitemaps && len(seenURLs) < maxURLs {
@@ -1417,6 +1430,139 @@ func buildSitemapCandidates(sourceURL string) []string {
 	return candidates
 }
 
+func isBookUZBooksListingURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	if normalizeHost(parsed.Host) != "book.uz" {
+		return false
+	}
+	path := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parsed.Path)), "/")
+	return path == "/books"
+}
+
+func (s *ParserAppService) discoverBookUZCatalogURLs(
+	ctx context.Context,
+	sourceURL string,
+	limit int,
+	maxURLs int,
+	limiter *hostRateLimiter,
+) ([]string, error) {
+	if !isBookUZBooksListingURL(sourceURL) {
+		return nil, nil
+	}
+	if maxURLs < 1 {
+		maxURLs = 1
+	}
+
+	target := maxURLs
+	if limit > 0 {
+		target = maxInt(limit*2, limit+50)
+		if target < 120 {
+			target = 120
+		}
+		if target > maxURLs {
+			target = maxURLs
+		}
+	}
+
+	result := make([]string, 0, minInt(target, 8000))
+	seen := map[string]struct{}{}
+	page := 1
+	perPage := 100
+	maxPages := 1500
+
+	for page <= maxPages && len(result) < target {
+		select {
+		case <-ctx.Done():
+			return result, nil
+		default:
+		}
+
+		apiURL := fmt.Sprintf("https://backend.book.uz/user-api/book?page=%d&limit=%d", page, perPage)
+		body, _, status, _, err := s.fetchBody(ctx, apiURL, limiter)
+		if err != nil || status >= 400 {
+			if page == 1 {
+				return result, err
+			}
+			break
+		}
+
+		items, reportedTotal := parseBookUZBooksAPIResponse(body)
+		if len(items) == 0 {
+			break
+		}
+
+		for _, item := range items {
+			slug := cleanText(firstNonEmpty(toString(item["link"]), toString(item["_id"])))
+			if slug == "" {
+				continue
+			}
+
+			detailURL := "https://book.uz/books/details/" + strings.Trim(slug, "/")
+			normalized, ok := normalizeCrawlURL(detailURL, sourceURL, "book.uz")
+			if !ok {
+				continue
+			}
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+
+			if len(result) >= target {
+				break
+			}
+		}
+
+		if reportedTotal > 0 && len(result) >= reportedTotal {
+			break
+		}
+
+		page++
+	}
+
+	return result, nil
+}
+
+func parseBookUZBooksAPIResponse(body []byte) ([]map[string]any, int) {
+	if len(body) == 0 {
+		return nil, 0
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, 0
+	}
+
+	data := toMap(payload["data"])
+	if len(data) == 0 {
+		return nil, 0
+	}
+
+	total := 0
+	if parsedTotal := toInt(data["total"]); parsedTotal != nil && *parsedTotal > 0 {
+		total = *parsedTotal
+	}
+
+	rawItems, ok := data["data"].([]any)
+	if !ok || len(rawItems) == 0 {
+		return nil, total
+	}
+
+	items := make([]map[string]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		if item := toMap(raw); len(item) > 0 {
+			items = append(items, item)
+		}
+	}
+
+	return items, total
+}
+
 func looksLikeSitemapDocument(rawURL, contentType string, body []byte) bool {
 	urlLower := strings.ToLower(strings.TrimSpace(rawURL))
 	if strings.Contains(urlLower, "sitemap") || strings.HasSuffix(urlLower, ".xml") || strings.HasSuffix(urlLower, ".xml.gz") {
@@ -1492,6 +1638,7 @@ var productURLPattern = regexp.MustCompile(`(?i)(book|books|product|catalog|item
 var trailingNumericProductIDPattern = regexp.MustCompile(`(?i)(?:-|/)\d{4,}(?:/|$)`)
 var paginationPathPattern = regexp.MustCompile(`(?i)/page/\d+/?(?:$|\?)`)
 var catalogProductSlugPattern = regexp.MustCompile(`(?i)/catalog/(book-|item-|product-|kniga-|isbn-|sku-)`)
+var booksDetailsProductPathPattern = regexp.MustCompile(`(?i)/books/details/[^/?#]+/?$`)
 var booksDeepProductPathPattern = regexp.MustCompile(`(?i)/books/[^/?#]+/[^/?#]+/?$`)
 var booksSingleProductPathPattern = regexp.MustCompile(`(?i)/(book|books)/[^/?#]{3,}/?$`)
 var catalogDeepProductPathPattern = regexp.MustCompile(`(?i)/catalog/[^/?#]+/[^/?#]+/?$`)
@@ -1500,6 +1647,7 @@ var inlineAttrKeyPattern = regexp.MustCompile(`(?i)[a-zа-яё0-9()\\-\\s]{2,}:`
 var isbnValuePattern = regexp.MustCompile(`(?i)[0-9x][0-9x\\-]{8,20}`)
 var numericIDPattern = regexp.MustCompile(`^[0-9]{3,}$`)
 var waitingListJSONPattern = regexp.MustCompile(`(?is)let\s+waitingList\s*=\s*(\[[\s\S]*?\]);`)
+var nextDataScriptPattern = regexp.MustCompile(`(?is)<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)</script>`)
 
 func countLikelyProductCandidates(urls map[string]struct{}) int {
 	count := 0
@@ -1522,6 +1670,9 @@ func isLikelyProductPath(rawURL string) bool {
 		pathLower = strings.ToLower(parsed.Path)
 	}
 	if strings.Contains(pathLower, "/catalog/product/") {
+		return true
+	}
+	if booksDetailsProductPathPattern.MatchString(pathLower) {
 		return true
 	}
 	if catalogProductSlugPattern.MatchString(pathLower) {
@@ -1601,6 +1752,9 @@ func scoreProductURL(rawURL string) int {
 	}
 	if strings.Contains(urlLower, "/catalog/product/") {
 		score += 18
+	}
+	if booksDetailsProductPathPattern.MatchString(pathLower) {
+		score += 14
 	}
 	if catalogProductSlugPattern.MatchString(urlLower) {
 		score += 18
@@ -1845,6 +1999,15 @@ func extractProductData(pageURL string, body []byte) (map[string]any, bool) {
 		}
 	}
 
+	nextData := extractProductFromNextData(pageURL, body)
+	if len(nextData) > 0 {
+		mergeMissingFields(nextData, htmlProduct)
+		enrichWithMetaFields(nextData, meta)
+		if isProductCandidate(nextData, meta, pageURL, body, "next_data") {
+			return sanitizeParsedData(nextData), true
+		}
+	}
+
 	if len(htmlProduct) > 0 {
 		enrichWithMetaFields(htmlProduct, meta)
 		if isProductCandidate(htmlProduct, meta, pageURL, body, "html_product") {
@@ -1865,6 +2028,290 @@ func extractProductData(pageURL string, body []byte) (map[string]any, bool) {
 	}
 
 	return nil, false
+}
+
+func extractProductFromNextData(pageURL string, body []byte) map[string]any {
+	if len(body) == 0 {
+		return nil
+	}
+
+	chunk := string(body[:minInt(len(body), 3*1024*1024)])
+	matches := nextDataScriptPattern.FindStringSubmatch(chunk)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	rawJSON := strings.TrimSpace(matches[1])
+	if rawJSON == "" {
+		return nil
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(rawJSON))
+	decoder.UseNumber()
+	var payload map[string]any
+	if err := decoder.Decode(&payload); err != nil {
+		return nil
+	}
+
+	pageProps := toMap(toMap(payload["props"])["pageProps"])
+	if len(pageProps) == 0 {
+		return nil
+	}
+
+	product := pickNextDataProduct(pageProps)
+	if len(product) == 0 {
+		return nil
+	}
+
+	title := cleanText(firstNonEmpty(toString(product["name"]), toString(product["title"])))
+	if title == "" {
+		return nil
+	}
+
+	sourceURL := firstNonEmpty(resolveURLAgainstBase(pageURL, toString(pageProps["currentUrl"])), pageURL)
+	data := map[string]any{
+		"title":      title,
+		"source_url": sourceURL,
+		"extraction": "next_data",
+	}
+
+	if description := extractNextDataDescription(product["description"]); description != "" {
+		data["description"] = description
+	}
+
+	if price := firstFloatValue(
+		product["bookPrice"],
+		product["price"],
+		product["amount"],
+		product["ebookPrice"],
+		product["audioPrice"],
+	); price != nil {
+		data["price"] = *price
+	}
+
+	if isbn := normalizeISBN(firstNonEmpty(toString(product["isbn"]), toString(product["barcode"]))); isbn != "" {
+		data["isbn"] = isbn
+	}
+	if barcode := cleanText(toString(product["barcode"])); barcode != "" {
+		data["barcode"] = barcode
+	}
+
+	if productID := cleanText(firstNonEmpty(toString(product["_id"]), toString(product["id"]))); productID != "" {
+		data["product_id"] = productID
+		data["sku"] = productID
+	}
+	if sku := cleanText(toString(product["sku"])); sku != "" {
+		data["sku"] = sku
+	}
+
+	publisher := toMap(product["publisher"])
+	if len(publisher) > 0 {
+		if value := cleanText(firstNonEmpty(toString(publisher["name"]), toString(publisher["title"]))); value != "" {
+			data["publisher"] = value
+		}
+	} else if value := cleanText(toString(product["publisher"])); value != "" {
+		data["publisher"] = value
+	}
+
+	if authors := extractNextDataNames(firstNonEmptyAny(product["authors"], product["author"])); len(authors) > 0 {
+		data["author_names"] = authors
+	}
+	if genres := extractNextDataNames(product["genres"]); len(genres) > 0 {
+		data["genres"] = genres
+	}
+	if tags := extractNextDataNames(product["tags"]); len(tags) > 0 {
+		data["tags"] = tags
+	}
+
+	imageRaw := firstNonEmpty(
+		toString(product["imgUrl"]),
+		toString(product["image"]),
+		toString(pageProps["seoImage"]),
+	)
+	if image := normalizeNextDataImage(sourceURL, imageRaw); image != "" {
+		data["image"] = image
+	}
+
+	if available, ok := product["isAvailable"].(bool); ok {
+		if available {
+			data["availability"] = "in_stock"
+		} else {
+			data["availability"] = "out_of_stock"
+		}
+	} else if amount := toInt(product["amount"]); amount != nil {
+		if *amount > 0 {
+			data["availability"] = "in_stock"
+		} else {
+			data["availability"] = "out_of_stock"
+		}
+	}
+
+	for _, key := range []string{
+		"link",
+		"year",
+		"numberOfPage",
+		"paperFormat",
+		"language",
+		"cover",
+		"state",
+		"rating",
+		"rateCount",
+		"viewsCount",
+		"stockCount",
+		"availableCount",
+		"bookPrice",
+		"ebookPrice",
+		"audioPrice",
+		"potcastPrice",
+	} {
+		value := product[key]
+		if isEmptyValue(value) {
+			continue
+		}
+		data[key] = value
+	}
+
+	if !hasAnyProductSignals(data) {
+		return nil
+	}
+
+	return data
+}
+
+func pickNextDataProduct(pageProps map[string]any) map[string]any {
+	candidates := []any{
+		pageProps["data"],
+		toMap(pageProps["data"])["data"],
+		pageProps["product"],
+		pageProps["book"],
+		pageProps["item"],
+	}
+
+	for _, raw := range candidates {
+		candidate := toMap(raw)
+		if looksLikeNextDataProduct(candidate) {
+			return candidate
+		}
+	}
+
+	return nil
+}
+
+func looksLikeNextDataProduct(candidate map[string]any) bool {
+	if len(candidate) == 0 {
+		return false
+	}
+	hasName := cleanText(firstNonEmpty(toString(candidate["name"]), toString(candidate["title"]))) != ""
+	if !hasName {
+		return false
+	}
+	for _, key := range []string{"bookPrice", "price", "barcode", "isbn", "link", "_id", "id"} {
+		if !isEmptyValue(candidate[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractNextDataDescription(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return cleanText(typed)
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text := ""
+			switch nested := item.(type) {
+			case string:
+				text = cleanText(nested)
+			case map[string]any:
+				text = cleanText(firstNonEmpty(toString(nested["value"]), toString(nested["text"])))
+			}
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return cleanText(strings.Join(parts, " "))
+	case map[string]any:
+		return cleanText(firstNonEmpty(toString(typed["value"]), toString(typed["text"])))
+	default:
+		return cleanText(toString(value))
+	}
+}
+
+func extractNextDataNames(value any) []string {
+	names := []string{}
+	seen := map[string]struct{}{}
+	add := func(item string) {
+		item = cleanText(item)
+		if item == "" {
+			return
+		}
+		key := strings.ToLower(item)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		names = append(names, item)
+	}
+
+	switch typed := value.(type) {
+	case string:
+		add(typed)
+	case []string:
+		for _, item := range typed {
+			add(item)
+		}
+	case []any:
+		for _, item := range typed {
+			switch nested := item.(type) {
+			case string:
+				add(nested)
+			case map[string]any:
+				add(firstNonEmpty(toString(nested["name"]), toString(nested["fullName"]), toString(nested["title"])))
+			}
+		}
+	case map[string]any:
+		add(firstNonEmpty(toString(typed["name"]), toString(typed["fullName"]), toString(typed["title"])))
+	}
+
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func firstFloatValue(values ...any) *float64 {
+	for _, value := range values {
+		if parsed := toFloat(value); parsed != nil {
+			return parsed
+		}
+	}
+	return nil
+}
+
+func normalizeNextDataImage(pageURL, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	lower := strings.ToLower(raw)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "data:") {
+		return raw
+	}
+
+	host := ""
+	if parsed, err := url.Parse(pageURL); err == nil {
+		host = normalizeHost(parsed.Host)
+	}
+	if host == "book.uz" {
+		cleaned := strings.TrimPrefix(raw, "/")
+		if cleaned != "" {
+			return "https://backend.book.uz/user-api/" + cleaned
+		}
+	}
+
+	return resolveURLAgainstBase(pageURL, raw)
 }
 
 func parseJSONLD(raw string) []map[string]any {

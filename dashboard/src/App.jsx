@@ -1205,22 +1205,22 @@ function App() {
 
   const handleDeleteEksmoProduct = async (productID) => {
     if (!isMongoObjectId(productID)) return
-    const confirmed = window.confirm('Удалить этот товар из каталога Eksmo?\n\nВнимание: удаленный товар нельзя вернуть.')
+    const confirmed = window.confirm('Удалить этот товар из каталога All?\n\nВнимание: удаленный товар нельзя вернуть.')
     if (!confirmed) return
 
     try {
       setEksmoActionKey(`delete:${productID}`)
-      setCopyStatus('Удаление товара из каталога Eksmo...')
+      setCopyStatus('Удаление товара из каталога All...')
 
       const response = await fetch(`${API_BASE_URL}/eksmoProducts/${productID}`, { method: 'DELETE' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
 
-      setCopyStatus('Товар удален из каталога Eksmo.')
+      setCopyStatus('Товар удален из каталога All.')
       setSelectedProductIds((prev) => prev.filter((id) => id !== productID))
       setSyncVersion((prev) => prev + 1)
     } catch (err) {
-      setCopyStatus(err.message || 'Не удалось удалить товар Eksmo')
+      setCopyStatus(err.message || 'Не удалось удалить товар All')
     } finally {
       setEksmoActionKey('')
     }
@@ -1228,15 +1228,15 @@ function App() {
 
   const handleDeleteSelectedEksmoProducts = async () => {
     const productIDs = selectedProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
-    if (productIDs.length === 0) return setCopyStatus('Выберите хотя бы один товар Eksmo.')
+    if (productIDs.length === 0) return setCopyStatus('Выберите хотя бы один товар All.')
     const confirmed = window.confirm(
-      `Удалить ${productIDs.length} товар(ов) из каталога Eksmo?\n\nВнимание: удаленные товары нельзя вернуть.`
+      `Удалить ${productIDs.length} товар(ов) из каталога All?\n\nВнимание: удаленные товары нельзя вернуть.`
     )
     if (!confirmed) return
 
     try {
       setEksmoActionKey('bulk-delete')
-      setCopyStatus(`Удаление ${productIDs.length} выбранных товаров из каталога Eksmo...`)
+      setCopyStatus(`Удаление ${productIDs.length} выбранных товаров из каталога All...`)
 
       const response = await fetch(`${API_BASE_URL}/eksmoProducts`, {
         method: 'DELETE',
@@ -1258,10 +1258,10 @@ function App() {
       if (notFound > 0 || invalid > 0) {
         setCopyStatus(`Удалено: ${deleted}, не найдено: ${notFound}, некорректно: ${invalid}.`)
       } else {
-        setCopyStatus(`Удалено товаров из каталога Eksmo: ${deleted}.`)
+        setCopyStatus(`Удалено товаров из каталога All: ${deleted}.`)
       }
     } catch (err) {
-      setCopyStatus(err.message || 'Не удалось удалить выбранные товары Eksmo')
+      setCopyStatus(err.message || 'Не удалось удалить выбранные товары All')
     } finally {
       setEksmoActionKey('')
     }
@@ -1394,23 +1394,23 @@ function App() {
   const handleDeleteDuplicateProduct = async (productID) => {
     if (duplicateActionBusy) return
     if (!isMongoObjectId(productID)) return
-    const confirmed = window.confirm('Удалить этот товар из каталога Eksmo?\n\nВнимание: удаленный товар нельзя вернуть.')
+    const confirmed = window.confirm('Удалить этот товар из каталога All?\n\nВнимание: удаленный товар нельзя вернуть.')
     if (!confirmed) return
 
     try {
       setDuplicateDeleteId(productID)
       setDuplicatesError('')
-      setDuplicatesStatus('Удаление товара из каталога Eksmo...')
+      setDuplicatesStatus('Удаление товара из каталога All...')
       const response = await fetch(`${API_BASE_URL}/eksmoProducts/${productID}`, { method: 'DELETE' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
 
       setDuplicateProducts((prev) => prev.filter((item) => getEksmoMongoId(item) !== productID))
       setSelectedDuplicateIds((prev) => prev.filter((id) => id !== productID))
-      setDuplicatesStatus('Товар удален из каталога Eksmo.')
+      setDuplicatesStatus('Товар удален из каталога All.')
       setSyncVersion((prev) => prev + 1)
     } catch (err) {
-      setDuplicatesError(err.message || 'Не удалось удалить товар Eksmo')
+      setDuplicatesError(err.message || 'Не удалось удалить товар All')
     } finally {
       setDuplicateDeleteId('')
     }

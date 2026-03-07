@@ -151,6 +151,10 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 	if err != nil {
 		return ParserRunExecution{}, err
 	}
+	if blockErr := s.detectSourceBlocking(ctx, sourceURL); blockErr != nil {
+		_ = s.parserRepo.FinishRun(ctx, run.ID, nil, 0, 0, 0, blockErr.Error())
+		return ParserRunExecution{}, blockErr
+	}
 
 	urls, discoverErr := s.discoverCandidateURLs(ctx, sourceURL, limit, maxSitemaps, rps)
 	if discoverErr != nil {

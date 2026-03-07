@@ -166,6 +166,12 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 		_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), 0, rateRetries, parseErr.Error())
 		return ParserRunExecution{}, parseErr
 	}
+	if len(records) == 0 {
+		if blockErr := s.detectSourceBlocking(ctx, sourceURL); blockErr != nil {
+			_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), 0, rateRetries, blockErr.Error())
+			return ParserRunExecution{}, blockErr
+		}
+	}
 	if limit > 0 && len(records) > limit {
 		records = records[:limit]
 	}
@@ -1246,6 +1252,71 @@ func (s *ParserAppService) parseURLs(
 	}
 
 	return parsed, totalRetries, nil
+}
+
+func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("User-Agent", s.userAgent)
+	req.Header.Set("Accept", "text/html,application/xml,text/xml,application/json;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("Pragma", "no-cache")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if readErr != nil {
+		return nil
+	}
+
+	reason := detectBotProtectionReason(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	if reason == "" {
+		return nil
+	}
+
+	return fmt.Errorf("source website is protected from server-side parsing (%s). Use desktop parser for this source or configure a trusted outbound proxy", reason)
+}
+
+func detectBotProtectionReason(statusCode int, contentType string, body []byte) string {
+	bodyLower := strings.ToLower(string(body))
+	contentTypeLower := strings.ToLower(strings.TrimSpace(contentType))
+
+	type marker struct {
+		token  string
+		reason string
+	}
+
+	markers := []marker{
+		{token: "ddos-guard", reason: "ddos-guard"},
+		{token: "js-challenge", reason: "ddos-guard challenge"},
+		{token: "checking your browser", reason: "anti-bot browser challenge"},
+		{token: "cloudflare", reason: "cloudflare challenge"},
+		{token: "cf-chl", reason: "cloudflare challenge"},
+		{token: "captcha", reason: "captcha challenge"},
+		{token: "access denied", reason: "access denied"},
+		{token: "forbidden", reason: "forbidden"},
+	}
+
+	for _, item := range markers {
+		if strings.Contains(bodyLower, item.token) {
+			return item.reason
+		}
+	}
+
+	if statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+		if strings.Contains(contentTypeLower, "text/html") || strings.Contains(contentTypeLower, "text/plain") {
+			return fmt.Sprintf("http %d", statusCode)
+		}
+	}
+
+	return ""
 }
 
 func (s *ParserAppService) fetchBody(

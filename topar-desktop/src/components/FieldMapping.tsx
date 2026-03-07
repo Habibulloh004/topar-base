@@ -128,7 +128,7 @@ export default function FieldMapping() {
       <div className="mapping-columns">
         {(['eksmo', 'main'] as const).map((prefix) => (
           <div key={prefix} className="mapping-column">
-            <h3>{prefix === 'eksmo' ? 'Eksmo' : 'Main'}</h3>
+            <h3>{prefix === 'eksmo' ? 'All' : 'Main'}</h3>
 
             {SCHEMA[prefix].map((field) => {
               const target = `${prefix}.${field.key}`

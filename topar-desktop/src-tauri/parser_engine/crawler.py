@@ -20,10 +20,12 @@ class UrlCrawler:
         self,
         source_url: str,
         max_sitemaps: int = 120,
+        target_limit: int = 0,
         progress_callback: Optional[Callable] = None
     ):
         self.source_url = source_url
         self.max_sitemaps = max_sitemaps
+        self.target_limit = max(0, int(target_limit or 0))
         self.progress_callback = progress_callback or (lambda *args: None)
         self.base_domain = self._extract_domain(source_url)
 
@@ -31,6 +33,95 @@ class UrlCrawler:
         """Extract base domain from URL"""
         parsed = urlparse(url)
         return f"{parsed.scheme}://{parsed.netloc}"
+
+    async def discover_from_site_api(self) -> List[str]:
+        """Discover URLs from known site APIs when DOM/sitemap has no product links."""
+        if self._is_bookuz_books_listing():
+            return await self._discover_bookuz_books_api()
+        return []
+
+    def _is_bookuz_books_listing(self) -> bool:
+        parsed = urlparse(self.source_url)
+        host = parsed.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+
+        if host != "book.uz":
+            return False
+
+        path = (parsed.path or "").rstrip("/").lower()
+        return path == "/books"
+
+    async def _discover_bookuz_books_api(self) -> List[str]:
+        """Fetch book.uz product detail URLs via backend API pagination."""
+        self.progress_callback("api_discovery_started", {
+            "source": "book.uz",
+            "endpoint": "https://backend.book.uz/user-api/book",
+        })
+
+        urls: List[str] = []
+        seen: Set[str] = set()
+        page = 1
+        per_page = 100
+        max_pages = 1500
+        soft_target = 0
+        if self.target_limit > 0:
+            soft_target = max(self.target_limit + 50, self.target_limit * 2)
+
+        while page <= max_pages:
+            api_url = f"https://backend.book.uz/user-api/book?page={page}&limit={per_page}"
+            try:
+                response = requests.get(api_url, timeout=30)
+                response.raise_for_status()
+                payload = response.json()
+            except Exception as exc:
+                self.progress_callback("api_discovery_error", {
+                    "source": "book.uz",
+                    "page": page,
+                    "error": str(exc),
+                })
+                break
+
+            data = payload.get("data") if isinstance(payload, dict) else None
+            items = data.get("data") if isinstance(data, dict) else None
+            total = data.get("total") if isinstance(data, dict) else None
+
+            if not isinstance(items, list) or not items:
+                break
+
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                slug = str(item.get("link") or item.get("_id") or "").strip()
+                if not slug:
+                    continue
+
+                product_url = urljoin(self.base_domain, f"/books/details/{slug}")
+                if product_url in seen:
+                    continue
+                seen.add(product_url)
+                urls.append(product_url)
+
+                if soft_target > 0 and len(urls) >= soft_target:
+                    break
+
+            self.progress_callback("api_page_processed", {
+                "source": "book.uz",
+                "page": page,
+                "items_found": len(items),
+                "total_urls": len(urls),
+                "reported_total": int(total) if isinstance(total, int) else None,
+            })
+
+            if soft_target > 0 and len(urls) >= soft_target:
+                break
+            if isinstance(total, int) and total > 0 and len(urls) >= total:
+                break
+
+            page += 1
+            await asyncio.sleep(0.05)
+
+        return urls
 
     async def discover_from_sitemap(self, browser: Browser) -> List[str]:
         """Try to discover URLs from XML sitemaps"""
@@ -220,6 +311,7 @@ class UrlCrawler:
             r'/products/',
             r'/item/',
             r'/book/',
+            r'/books/details/[^/?#]+',
             r'/isbn/',
             r'/dp/',
             r'/p/',
@@ -245,7 +337,7 @@ class UrlCrawler:
             r'/c/',
             r'/shop/',
             r'/products$',
-            r'/books/?$',
+            r'/books(?:/)?(?:\?|$)',
         ]
 
         url_lower = url.lower()

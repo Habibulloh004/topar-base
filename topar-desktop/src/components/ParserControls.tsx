@@ -4,13 +4,14 @@ import { useParserStore } from '../store/parserStore'
 
 export default function ParserControls() {
   const { t } = useTranslation()
-  const { startParsing, progress } = useParserStore()
+  const { startParsing, stopParsing, progress } = useParserStore()
 
   const [sourceUrl, setSourceUrl] = useState('')
   const [limitInput, setLimitInput] = useState('')
   const [workersInput, setWorkersInput] = useState('1')
   const [requestsPerSecInput, setRequestsPerSecInput] = useState('3')
   const [error, setError] = useState('')
+  const [isStopping, setIsStopping] = useState(false)
 
   const getErrorMessage = (err: any, fallback: string) => {
     if (!err) return fallback
@@ -73,6 +74,19 @@ export default function ParserControls() {
   }
 
   const isRunning = progress.status === 'running'
+  const canStop = isRunning && !isStopping
+
+  const handleStop = async () => {
+    setError('')
+    setIsStopping(true)
+    try {
+      await stopParsing()
+    } catch (err: any) {
+      setError(getErrorMessage(err, t('parse.errors.failed')))
+    } finally {
+      setIsStopping(false)
+    }
+  }
 
   return (
     <div className="parser-controls">
@@ -142,9 +156,25 @@ export default function ParserControls() {
 
         {error && <div className="error-message">{error}</div>}
 
-        <button type="submit" className="btn-primary" disabled={isRunning}>
-          {isRunning ? `${t('parse.progress.running')}...` : t('parse.startParsing')}
-        </button>
+        {isRunning ? (
+          <div className="parse-actions">
+            <button type="submit" className="btn-primary" disabled>
+              {`${t('parse.progress.running')}...`}
+            </button>
+            <button
+              type="button"
+              className="btn-danger"
+              onClick={handleStop}
+              disabled={!canStop}
+            >
+              {isStopping ? `${t('parse.stopParsing')}...` : t('parse.stopParsing')}
+            </button>
+          </div>
+        ) : (
+          <button type="submit" className="btn-primary">
+            {t('parse.startParsing')}
+          </button>
+        )}
       </form>
 
       {isRunning && (

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::progress::{ParserStatus, ProgressTracker};
 use crate::db::operations::{Record, Run};
@@ -42,6 +44,13 @@ struct ParserResult {
     rate_limit_retries: usize,
     detected_fields: Vec<String>,
     records: Vec<ParsedRecord>,
+    #[serde(default = "default_true")]
+    completed: bool,
+    error: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +64,7 @@ pub struct ParserEngine {
     db: Arc<Database>,
     progress: ProgressTracker,
     python_process: Option<Child>,
+    current_run_id: Option<String>,
 }
 
 impl ParserEngine {
@@ -63,6 +73,7 @@ impl ParserEngine {
             db,
             progress,
             python_process: None,
+            current_run_id: None,
         }
     }
 
@@ -96,6 +107,7 @@ impl ParserEngine {
         // Save to database
         self.db.insert_run(&run)
             .context("Failed to save run to database")?;
+        self.current_run_id = Some(run_id.clone());
 
         // Spawn Python parser process
         let app_dir = std::env::current_exe()?
@@ -170,11 +182,22 @@ impl ParserEngine {
                             }
                         }
                         ParserMessage::Result { data } => {
+                            let completed = data.completed;
+                            let error_message = data.error.clone();
+
                             // Save records to database
                             let _ = Self::save_results(&db, &run_id_clone, data).await;
 
                             progress.update(|p| {
-                                p.status = ParserStatus::Finished;
+                                if completed {
+                                    p.status = ParserStatus::Finished;
+                                    p.error = None;
+                                } else {
+                                    p.status = ParserStatus::Failed;
+                                    p.error = Some(
+                                        error_message.unwrap_or_else(|| "Parsing cancelled by user".to_string())
+                                    );
+                                }
                             });
                         }
                     }
@@ -185,6 +208,95 @@ impl ParserEngine {
         self.python_process = Some(child);
 
         Ok(run)
+    }
+
+    /// Stop running parser process and mark run as cancelled.
+    pub fn stop(&mut self) -> Result<()> {
+        let Some(mut child) = self.python_process.take() else {
+            self.current_run_id = None;
+            return Ok(());
+        };
+
+        let run_id = self.current_run_id.clone();
+        let already_exited = matches!(child.try_wait(), Ok(Some(_)));
+        let interrupt_attempted = if already_exited {
+            true
+        } else {
+            Self::interrupt_process(&mut child)
+        };
+        let exited = already_exited || Self::wait_for_exit(&mut child, Duration::from_secs(3));
+
+        if !exited {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+
+        let snapshot = self.progress.get();
+        if let Some(run_id) = run_id.as_deref() {
+            if let Ok(Some(mut run)) = self.db.get_run(run_id) {
+                if run.status != "running" {
+                    self.current_run_id = None;
+                    return Ok(());
+                }
+
+                run.discovered_urls = snapshot.discovered_urls as i64;
+                run.parsed_products = snapshot.parsed_products as i64;
+                run.rate_limit_retries = snapshot.rate_limit_retries as i64;
+                run.status = "failed".to_string();
+                run.error = Some(if interrupt_attempted {
+                    "Parsing cancelled by user".to_string()
+                } else {
+                    "Failed to interrupt parser process".to_string()
+                });
+                run.finished_at = Some(chrono::Utc::now());
+                self.db.update_run(&run)
+                    .context("Failed to update cancelled run")?;
+            }
+        }
+
+        self.progress.update(|p| {
+            p.status = ParserStatus::Failed;
+            p.error = Some(if interrupt_attempted {
+                "Parsing cancelled by user".to_string()
+            } else {
+                "Failed to interrupt parser process".to_string()
+            });
+        });
+
+        self.current_run_id = None;
+
+        Ok(())
+    }
+
+    fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return true,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        return false;
+                    }
+                    thread::sleep(Duration::from_millis(80));
+                }
+                Err(_) => return false,
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn interrupt_process(child: &mut Child) -> bool {
+        let pid = child.id().to_string();
+        Command::new("kill")
+            .args(["-s", "INT", &pid])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(unix))]
+    fn interrupt_process(child: &mut Child) -> bool {
+        child.kill().is_ok()
     }
 
     fn handle_progress_event(
@@ -264,7 +376,13 @@ impl ParserEngine {
             run.parsed_products = result.parsed_products as i64;
             run.rate_limit_retries = result.rate_limit_retries as i64;
             run.detected_fields = result.detected_fields;
-            run.status = "finished".to_string();
+            if result.completed {
+                run.status = "finished".to_string();
+                run.error = None;
+            } else {
+                run.status = "failed".to_string();
+                run.error = Some(result.error.unwrap_or_else(|| "Parsing cancelled by user".to_string()));
+            }
             run.finished_at = Some(chrono::Utc::now());
 
             db.update_run(&run)
@@ -302,6 +420,7 @@ impl Drop for ParserEngine {
     fn drop(&mut self) {
         if let Some(mut child) = self.python_process.take() {
             let _ = child.kill();
+            let _ = child.wait();
         }
     }
 }

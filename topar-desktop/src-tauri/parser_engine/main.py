@@ -45,6 +45,7 @@ def log_result(result: Dict[str, Any]):
 
 def parse_command(args):
     """Execute parsing operation"""
+    parser = None
     try:
         # Create parser instance
         parser = ProductParser(
@@ -66,17 +67,17 @@ def parse_command(args):
         result = parser.parse()
 
         # Send final result
-        log_result({
-            "discovered_urls": result["discovered_urls"],
-            "parsed_products": result["parsed_products"],
-            "rate_limit_retries": result["rate_limit_retries"],
-            "detected_fields": result["detected_fields"],
-            "records": result["records"]
-        })
+        log_result(result)
 
     except KeyboardInterrupt:
-        log_error("Parsing interrupted by user")
-        sys.exit(1)
+        if parser is not None:
+            log_result(parser.snapshot_result(
+                completed=False,
+                error="Parsing cancelled by user"
+            ))
+        else:
+            log_error("Parsing interrupted by user")
+        sys.exit(0)
     except Exception as e:
         log_error(str(e), {"type": type(e).__name__})
         sys.exit(1)

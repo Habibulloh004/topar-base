@@ -57,6 +57,7 @@ fn main() {
             // Parser commands
             commands::parser::start_parsing,
             commands::parser::get_parser_status,
+            commands::parser::stop_parsing,
             // Sync commands
             commands::sync::compare_with_remote,
             commands::sync::sync_to_database,

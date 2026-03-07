@@ -23,6 +23,7 @@
     "maxSitemaps": "Max Sitemaps",
     "maxSitemapsHint": "Maximum sitemap files to process",
     "startParsing": "Start Parsing",
+    "stopParsing": "Stop Parsing",
     "progress": {
       "title": "Parsing Progress",
       "status": "Status",
@@ -65,7 +66,7 @@
   "sync": {
     "title": "Sync to Database",
     "options": "Sync Options",
-    "eksmo": "Sync to Eksmo",
+    "eksmo": "Sync to All",
     "main": "Sync to Main Database",
     "mappingName": "Mapping Name",
     "saveMapping": "Save Mapping Profile",

@@ -23,6 +23,7 @@ class FieldExtractor:
         """Main extraction method - tries multiple strategies"""
 
         # Structured data first, then broader metadata and heuristic fallbacks.
+        self._extract_from_next_data()
         self._extract_from_jsonld()
         self._extract_meta_tags()
 
@@ -44,6 +45,218 @@ class FieldExtractor:
             return {}
 
         return self.data
+
+    def _extract_from_next_data(self) -> bool:
+        """Extract product data from Next.js hydration payload (__NEXT_DATA__)."""
+        script = self.soup.find('script', id='__NEXT_DATA__')
+        if not script:
+            return False
+
+        raw = script.string or script.get_text()
+        if not raw:
+            return False
+
+        payload = self._safe_json_loads(raw)
+        if not isinstance(payload, dict):
+            return False
+
+        props = payload.get('props')
+        page_props = props.get('pageProps') if isinstance(props, dict) else None
+        if not isinstance(page_props, dict):
+            return False
+
+        product = self._extract_next_data_product(page_props)
+        if not isinstance(product, dict):
+            return False
+
+        title = product.get('name') or product.get('title')
+        self._set_if_missing('title', self._clean_text(title))
+
+        description = self._stringify_next_description(product.get('description'))
+        if description:
+            self._set_if_missing('description', description)
+
+        price = (
+            product.get('bookPrice')
+            or product.get('price')
+            or product.get('amount')
+            or product.get('ebookPrice')
+            or product.get('audioPrice')
+        )
+        self._set_if_missing('price', self._normalize_value('price', price))
+
+        isbn = product.get('isbn') or product.get('barcode')
+        self._set_if_missing('isbn', self._clean_text(isbn))
+        self._set_if_missing('barcode', self._clean_text(product.get('barcode')))
+        self._set_if_missing('product_id', self._clean_text(product.get('_id')))
+        self._set_if_missing('sku', self._clean_text(product.get('_id')))
+
+        if isinstance(product.get('publisher'), dict):
+            self._set_if_missing('publisher', self._clean_text(product['publisher'].get('name')))
+        else:
+            self._set_if_missing('publisher', self._clean_text(product.get('publisher')))
+
+        self._set_if_missing('author', self._extract_author_value(product))
+        self._set_if_missing('genres', self._extract_named_list(product.get('genres')))
+        self._set_if_missing('tags', self._extract_named_list(product.get('tags')))
+
+        image = (
+            product.get('imgUrl')
+            or product.get('image')
+            or page_props.get('seoImage')
+        )
+        normalized_image = self._normalize_next_image(image)
+        if normalized_image:
+            self._set_if_missing('image', normalized_image)
+
+        available = product.get('isAvailable')
+        if isinstance(available, bool):
+            self._set_if_missing('availability', 'in_stock' if available else 'out_of_stock')
+        elif self._normalize_value('amount', product.get('amount')):
+            self._set_if_missing('availability', 'in_stock')
+
+        current_url = page_props.get('currentUrl')
+        if current_url:
+            self._set_if_missing('url', self._make_absolute_url(str(current_url)))
+
+        for field in (
+            'link',
+            'year',
+            'numberOfPage',
+            'paperFormat',
+            'language',
+            'cover',
+            'state',
+            'rating',
+            'rateCount',
+            'viewsCount',
+            'stockCount',
+            'availableCount',
+            'bookPrice',
+            'ebookPrice',
+            'audioPrice',
+            'potcastPrice',
+        ):
+            if field in product:
+                self._set_if_missing(field, self._normalize_value(field, product.get(field)))
+
+        self._sources.add("next_data")
+        return True
+
+    def _extract_next_data_product(self, page_props: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Select most likely product object from Next.js page props."""
+        candidates = [
+            page_props.get('data'),
+            page_props.get('product'),
+            page_props.get('book'),
+            page_props.get('item'),
+        ]
+
+        for candidate in candidates:
+            product = self._unwrap_next_data_candidate(candidate)
+            if product:
+                return product
+
+        return None
+
+    def _unwrap_next_data_candidate(self, candidate: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(candidate, dict):
+            return None
+
+        if self._looks_like_next_product(candidate):
+            return candidate
+
+        nested = candidate.get('data')
+        if isinstance(nested, dict) and self._looks_like_next_product(nested):
+            return nested
+
+        return None
+
+    def _looks_like_next_product(self, data: Dict[str, Any]) -> bool:
+        has_name = bool(self._clean_text(data.get('name') or data.get('title')))
+        if not has_name:
+            return False
+
+        for marker in ('bookPrice', 'price', 'barcode', 'isbn', 'link', '_id'):
+            if marker in data:
+                return True
+        return False
+
+    def _extract_named_list(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return self._clean_text(value)
+
+        names = []
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str):
+                    cleaned = self._clean_text(item)
+                elif isinstance(item, dict):
+                    cleaned = self._clean_text(item.get('name') or item.get('fullName') or item.get('title'))
+                else:
+                    cleaned = ""
+                if cleaned:
+                    names.append(cleaned)
+        elif isinstance(value, dict):
+            cleaned = self._clean_text(value.get('name') or value.get('fullName') or value.get('title'))
+            if cleaned:
+                names.append(cleaned)
+
+        if not names:
+            return None
+
+        return ', '.join(names)
+
+    def _extract_author_value(self, product: Dict[str, Any]) -> Optional[str]:
+        for key in ('author', 'authors', 'writer'):
+            if key in product:
+                value = self._extract_named_list(product.get(key))
+                if value:
+                    return value
+        return None
+
+    def _stringify_next_description(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = self._clean_text(value)
+            return cleaned if cleaned else None
+        if isinstance(value, list):
+            parts = []
+            for item in value:
+                if isinstance(item, str):
+                    cleaned = self._clean_text(item)
+                elif isinstance(item, dict):
+                    cleaned = self._clean_text(item.get('value') or item.get('text'))
+                else:
+                    cleaned = ""
+                if cleaned:
+                    parts.append(cleaned)
+            if parts:
+                return " ".join(parts)
+        if isinstance(value, dict):
+            cleaned = self._clean_text(value.get('value') or value.get('text'))
+            return cleaned if cleaned else None
+        return None
+
+    def _normalize_next_image(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+
+        image = self._clean_text(value)
+        if not image:
+            return None
+
+        if image.startswith('http://') or image.startswith('https://') or image.startswith('data:'):
+            return image
+
+        page_host = urljoin(self.page_url, '/').lower()
+        if 'book.uz' in page_host:
+            return f"https://backend.book.uz/user-api/{image.lstrip('/')}"
+
+        return self._make_absolute_url(image)
 
     def _extract_from_jsonld(self) -> bool:
         """Extract from JSON-LD structured data"""
@@ -547,7 +760,9 @@ class FieldExtractor:
             return None
 
         if self._looks_like_url_key(key_lower):
-            return self._make_absolute_url(text)
+            if self._is_url_like_text(text):
+                return self._make_absolute_url(text)
+            return text
 
         if self._looks_like_count_key(key_lower):
             parsed_int = self._parse_int(text)
@@ -569,6 +784,16 @@ class FieldExtractor:
             token in key
             for token in ['url', 'image', 'logo', 'icon', 'thumbnail', 'cover']
         )
+
+    def _is_url_like_text(self, text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        if lowered.startswith(('http://', 'https://', 'data:')):
+            return True
+        if text.startswith(('/', './', '../')):
+            return True
+        return '/' in text
 
     def _looks_like_numeric_key(self, key: str) -> bool:
         return any(
@@ -685,6 +910,7 @@ class FieldExtractor:
     def _pick_primary_source(self) -> str:
         priority = [
             "jsonld",
+            "next_data",
             "opengraph",
             "microdata",
             "schema",
@@ -750,7 +976,17 @@ class FieldExtractor:
     def _looks_like_product_url(self, url_lower: str) -> bool:
         if re.search(r'/catalog/(books|knigi)-\d+/?$', url_lower):
             return False
-        for token in ('/product/', '/products/', '/item/', '/book/', '/isbn/', '/dp/', '/p/', '/goods/'):
+        for token in (
+            '/product/',
+            '/products/',
+            '/item/',
+            '/book/',
+            '/books/details/',
+            '/isbn/',
+            '/dp/',
+            '/p/',
+            '/goods/',
+        ):
             if token in url_lower:
                 return True
         if re.search(r'/[a-z0-9][a-z0-9-]{3,}-\d{4,}/?$', url_lower):

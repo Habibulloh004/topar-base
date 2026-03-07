@@ -46,6 +46,30 @@ class ProductParser:
         """Main entry point - synchronous wrapper for async parsing"""
         return asyncio.run(self._parse_async())
 
+    def snapshot_result(
+        self,
+        completed: bool = True,
+        error: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Build a normalized result payload from currently parsed data."""
+        records = list(self.parsed_products)
+        if self.limit > 0 and len(records) > self.limit:
+            records = records[:self.limit]
+
+        detected_fields: Set[str] = set(self.detected_fields)
+        for product in records:
+            detected_fields.update(product.keys())
+
+        return {
+            "discovered_urls": len(self.discovered_urls),
+            "parsed_products": len(records),
+            "rate_limit_retries": self.rate_limit_retries,
+            "detected_fields": sorted(detected_fields),
+            "records": records,
+            "completed": completed,
+            "error": error,
+        }
+
     async def _parse_async(self) -> Dict[str, Any]:
         """Async parsing implementation"""
         async with async_playwright() as p:
@@ -59,20 +83,7 @@ class ProductParser:
                 # Step 2: Parse products from discovered URLs
                 await self._parse_products()
 
-                if self.limit > 0 and len(self.parsed_products) > self.limit:
-                    self.parsed_products = self.parsed_products[:self.limit]
-
-                # Detect all unique fields from parsed data
-                for product in self.parsed_products:
-                    self.detected_fields.update(product.keys())
-
-                return {
-                    "discovered_urls": len(self.discovered_urls),
-                    "parsed_products": len(self.parsed_products),
-                    "rate_limit_retries": self.rate_limit_retries,
-                    "detected_fields": sorted(self.detected_fields),
-                    "records": self.parsed_products
-                }
+                return self.snapshot_result(completed=True)
 
             finally:
                 await self.browser.close()
@@ -84,11 +95,21 @@ class ProductParser:
         crawler = UrlCrawler(
             source_url=self.source_url,
             max_sitemaps=self.max_sitemaps,
+            target_limit=self.limit,
             progress_callback=self.progress_callback
         )
 
-        # Try sitemap first
-        urls = await crawler.discover_from_sitemap(self.browser)
+        urls = await crawler.discover_from_site_api()
+        if urls:
+            self.progress_callback("api_urls_discovered", {
+                "count": len(urls),
+                "source": self.source_url,
+            })
+
+        # Try sitemap if API discovery did not produce enough URLs
+        if len(urls) < 10:
+            sitemap_urls = await crawler.discover_from_sitemap(self.browser)
+            urls.extend(sitemap_urls)
 
         # If not enough URLs, try crawling
         if len(urls) < 10:
@@ -101,7 +122,11 @@ class ProductParser:
 
         # Remove duplicates
         self.discovered_urls = list(dict.fromkeys(urls))
-        if self.source_url and self.source_url not in self.discovered_urls:
+        if (
+            self.source_url
+            and self.source_url not in self.discovered_urls
+            and self._looks_like_product_url(self.source_url.lower())
+        ):
             self.discovered_urls.insert(0, self.source_url)
         self.discovered_urls = self._rank_discovered_urls(self.discovered_urls)
 
@@ -277,6 +302,9 @@ class ProductParser:
         if re.search(r'/catalog/(books|knigi)-\d+/?$', lower):
             score -= 14
 
+        if "/books/details/" in lower:
+            score += 14
+
         for token in (
             "/article/",
             "/articles/",
@@ -308,6 +336,7 @@ class ProductParser:
             r'/products/',
             r'/item/',
             r'/book/',
+            r'/books/details/[^/?#]+',
             r'/dp/',
             r'/p/',
             r'/isbn/',

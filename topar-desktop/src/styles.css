@@ -5,17 +5,20 @@
 }
 
 :root {
-  --primary: #2c5f7c;
-  --primary-hover: #1e4a61;
-  --secondary: #5a8fa8;
-  --success: #2d7a4a;
-  --warning: #d97706;
-  --error: #b42318;
-  --bg: #f9fafb;
-  --card-bg: #ffffff;
-  --border: #e5e7eb;
-  --text: #111827;
-  --text-secondary: #6b7280;
+  --primary: #6f63f6;
+  --primary-hover: #5d51e3;
+  --secondary: #8d82f7;
+  --success: #4f9a6a;
+  --warning: #7a5524;
+  --error: #a32a2a;
+  --bg: #eceaf7;
+  --card-bg: rgba(255, 255, 255, 0.92);
+  --border: #d9d6ec;
+  --text: #24213d;
+  --text-secondary: #6e6a92;
+  --surface-soft: #f1efff;
+  --surface-soft-border: #d3cff2;
+  --shadow-soft: 0 8px 24px rgba(73, 57, 138, 0.1);
 }
 
 body {
@@ -24,7 +27,7 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--bg);
+  background: linear-gradient(165deg, #f0eff8 0%, #e8e6f5 60%, #e5e2f8 100%);
   color: var(--text);
 }
 
@@ -35,10 +38,14 @@ body {
 }
 
 .app-header {
-  background: var(--primary);
-  color: white;
+  background: var(--card-bg);
+  color: var(--text);
   padding: 1.5rem 2rem;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-left: none;
+  border-right: none;
+  box-shadow: var(--shadow-soft);
 }
 
 .header-content {
@@ -53,7 +60,7 @@ body {
 }
 
 .subtitle {
-  opacity: 0.9;
+  color: var(--text-secondary);
   font-size: 0.9rem;
 }
 
@@ -65,9 +72,9 @@ body {
 
 .lang-switcher {
   padding: 0.4rem 0.75rem;
-  background: rgba(255, 255, 255, 0.2);
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: var(--surface-soft);
+  color: var(--text);
+  border: 1px solid var(--surface-soft-border);
   border-radius: 4px;
   font-size: 0.85rem;
   font-weight: 600;
@@ -76,14 +83,14 @@ body {
 }
 
 .lang-switcher:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #e6e2ff;
 }
 
 .new-parse-btn {
   padding: 0.5rem 1.25rem;
-  background: white;
-  color: var(--primary);
-  border: none;
+  background: var(--primary);
+  color: #fff;
+  border: 1px solid var(--primary-hover);
   border-radius: 4px;
   font-size: 0.95rem;
   font-weight: 600;
@@ -92,13 +99,13 @@ body {
 }
 
 .new-parse-btn:hover {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--primary-hover);
   transform: translateY(-1px);
 }
 
 .tabs {
   display: flex;
-  background: white;
+  background: var(--card-bg);
   border-bottom: 1px solid var(--border);
   padding: 0 2rem;
 }
@@ -144,9 +151,10 @@ h2 {
 
 .parse-form, .mapping-columns, .sync-options {
   background: var(--card-bg);
+  border: 1px solid var(--border);
   padding: 1.5rem;
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-soft);
 }
 
 .form-group {
@@ -167,6 +175,19 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 0.95rem;
+  background: #fff;
+  color: var(--text);
+}
+
+.form-group input:focus,
+.form-group select:focus,
+.mapping-controls select:focus,
+.mapping-controls input:focus,
+.mapping-actions input[type="text"]:focus,
+.sync-options input[type="text"]:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(111, 99, 246, 0.12);
 }
 
 .hint {
@@ -184,7 +205,7 @@ h2 {
 
 .btn-primary, .btn-secondary, .btn-danger {
   padding: 0.75rem 1.5rem;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 4px;
   font-size: 1rem;
   font-weight: 500;
@@ -194,7 +215,8 @@ h2 {
 
 .btn-primary {
   background: var(--primary);
-  color: white;
+  color: #fff;
+  border-color: var(--primary-hover);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -202,21 +224,23 @@ h2 {
 }
 
 .btn-secondary {
-  background: var(--secondary);
-  color: white;
+  background: var(--surface-soft);
+  color: var(--text);
+  border-color: var(--surface-soft-border);
 }
 
 .btn-secondary:hover:not(:disabled) {
-  background: #4a7a92;
+  background: #e6e2ff;
 }
 
 .btn-danger {
-  background: var(--error);
-  color: white;
+  background: #fff5f5;
+  color: var(--error);
+  border-color: #d9aaaa;
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: #911d14;
+  background: #ffecec;
 }
 
 .btn-primary:disabled, .btn-secondary:disabled, .btn-danger:disabled {
@@ -224,12 +248,19 @@ h2 {
   cursor: not-allowed;
 }
 
+.parse-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
 .progress-section {
   margin-top: 1.5rem;
   padding: 1.5rem;
   background: var(--card-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-soft);
 }
 
 .progress-bar {
@@ -243,7 +274,7 @@ h2 {
 
 .progress-fill {
   height: 100%;
-  background: var(--success);
+  background: var(--primary);
   transition: width 0.3s;
 }
 
@@ -261,7 +292,8 @@ h2 {
 
 .error-message {
   padding: 0.75rem;
-  background: #fee;
+  background: #fff5f5;
+  border: 1px solid #d9aaaa;
   color: var(--error);
   border-radius: 4px;
   margin-top: 1rem;
@@ -269,8 +301,9 @@ h2 {
 
 .success-message {
   padding: 0.75rem;
-  background: #efe;
-  color: var(--success);
+  background: var(--surface-soft);
+  border: 1px solid var(--surface-soft-border);
+  color: #3f3a66;
   border-radius: 4px;
   margin-top: 1rem;
 }
@@ -320,11 +353,12 @@ h2 {
 table {
   width: 100%;
   border-collapse: collapse;
-  background: white;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border);
 }
 
 thead {
-  background: var(--bg);
+  background: var(--surface-soft);
 }
 
 th, td {
@@ -399,7 +433,8 @@ tr:hover {
 
 .stat {
   padding: 1rem;
-  background: var(--bg);
+  background: var(--surface-soft);
+  border: 1px solid var(--surface-soft-border);
   border-radius: 4px;
   text-align: center;
 }

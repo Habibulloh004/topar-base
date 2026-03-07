@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/tauri'
 
+let progressPollInterval: ReturnType<typeof setInterval> | null = null
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 // Types
 export interface Run {
   id: string
@@ -56,6 +59,7 @@ interface ParserState {
     workers?: number
     requests_per_sec?: number
   }) => Promise<void>
+  stopParsing: () => Promise<void>
   loadRun: (runId: string) => Promise<void>
   pollProgress: () => Promise<void>
   updateMappingRule: (target: string, rule: MappingRule) => void
@@ -80,26 +84,79 @@ export const useParserStore = create<ParserState>((set, get) => ({
   // Start parsing
   startParsing: async (request) => {
     try {
+      if (progressPollInterval) {
+        clearInterval(progressPollInterval)
+        progressPollInterval = null
+      }
+
+      set({
+        currentRun: undefined,
+        records: [],
+        detectedFields: [],
+        mappingRules: {},
+        progress: {
+          status: 'running',
+          discovered_urls: 0,
+          parsed_products: 0,
+          rate_limit_retries: 0,
+          progress_percent: 0,
+        },
+      })
+
       const run: Run = await invoke('start_parsing', { request })
       set({ currentRun: run })
 
       // Start polling progress
-      const pollInterval = setInterval(async () => {
+      progressPollInterval = setInterval(async () => {
         await get().pollProgress()
 
         const { progress } = get()
         if (progress.status === 'finished' || progress.status === 'failed') {
-          clearInterval(pollInterval)
-
-          // Load full results
-          if (progress.status === 'finished') {
-            await get().loadRun(run.id)
+          if (progressPollInterval) {
+            clearInterval(progressPollInterval)
+            progressPollInterval = null
           }
+
+          // Load run snapshot for both successful and cancelled/failed runs.
+          await get().loadRun(run.id)
         }
       }, 1000)
     } catch (error) {
+      set((state) => ({
+        progress: {
+          ...state.progress,
+          status: 'failed',
+        },
+      }))
       console.error('Failed to start parsing:', error)
       throw error
+    }
+  },
+
+  // Stop current parsing process but keep already parsed data from current run.
+  stopParsing: async () => {
+    const runId = get().currentRun?.id
+    try {
+      await invoke('stop_parsing')
+    } catch (error) {
+      console.error('Failed to stop parsing:', error)
+      throw error
+    } finally {
+      if (progressPollInterval) {
+        clearInterval(progressPollInterval)
+        progressPollInterval = null
+      }
+    }
+
+    // Wait briefly until backend marks run finished/failed and persists partial records.
+    for (let attempt = 0; attempt < 25; attempt++) {
+      await get().pollProgress()
+      if (get().progress.status !== 'running') break
+      await sleep(120)
+    }
+
+    if (runId) {
+      await get().loadRun(runId)
     }
   },
 
@@ -181,6 +238,11 @@ export const useParserStore = create<ParserState>((set, get) => ({
 
   // Reset state
   reset: () => {
+    if (progressPollInterval) {
+      clearInterval(progressPollInterval)
+      progressPollInterval = null
+    }
+
     set({
       currentRun: undefined,
       records: [],

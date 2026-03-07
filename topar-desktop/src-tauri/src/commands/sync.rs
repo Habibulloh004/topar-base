@@ -182,13 +182,27 @@ pub async fn sync_to_database(
         return Err("No records found for selected run".to_string());
     }
 
-    let backend_url = state
+    const DEFAULT_BACKEND_URL: &str = "https://klasstovar.uz/api";
+
+    let configured_backend_url = state
         .db
         .get_config("backend_url")
         .map_err(|e| format!("Failed to load backend URL: {}", e))?
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "http://localhost:8090".to_string());
+        .filter(|value| !value.is_empty());
+
+    let backend_url = match configured_backend_url.as_deref() {
+        Some("http://localhost:8090")
+        | Some("http://127.0.0.1:8090")
+        | Some("http://localhost:8080")
+        | Some("http://127.0.0.1:8080") => DEFAULT_BACKEND_URL.to_string(),
+        Some(value) => value.to_string(),
+        None => DEFAULT_BACKEND_URL.to_string(),
+    };
+
+    if configured_backend_url.as_deref() != Some(backend_url.as_str()) {
+        let _ = state.db.set_config("backend_url", &backend_url);
+    }
 
     let client = SyncClient::new(backend_url.clone())
         .map_err(|e| format!("Failed to initialize sync client: {}", e))?;

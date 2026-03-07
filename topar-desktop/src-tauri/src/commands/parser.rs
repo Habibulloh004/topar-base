@@ -100,3 +100,15 @@ pub async fn get_parser_status() -> Result<ParserProgress, String> {
 
     Ok(progress)
 }
+
+#[tauri::command]
+pub async fn stop_parsing() -> Result<(), String> {
+    let mut parser_lock = PARSER_STATE.lock();
+    if let Some(engine) = parser_lock.as_mut() {
+        engine.stop()
+            .map_err(|e| format!("Failed to stop parser: {}", e))?;
+    }
+    *parser_lock = None;
+
+    Ok(())
+}

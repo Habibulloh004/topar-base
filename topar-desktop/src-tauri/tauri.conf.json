@@ -54,7 +54,13 @@
         "providerShortName": null,
         "signingIdentity": null
       },
-      "resources": ["parser_engine/*", "parser_engine/**/*"],
+      "resources": [
+        "parser_engine/main.py",
+        "parser_engine/parser.py",
+        "parser_engine/crawler.py",
+        "parser_engine/extractor.py",
+        "parser_engine/requirements.txt"
+      ],
       "shortDescription": "Topar Parser",
       "targets": "all",
       "windows": {

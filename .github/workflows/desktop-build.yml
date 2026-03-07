@@ -61,29 +61,6 @@ jobs:
         working-directory: topar-desktop
         run: npm ci
 
-      - name: Prepare parser runtime (macOS/Linux)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd topar-desktop/src-tauri/parser_engine
-          python -m venv --copies venv
-          ./venv/bin/python -m pip install --upgrade pip
-          ./venv/bin/python -m pip install -r requirements.txt
-          PLAYWRIGHT_BROWSERS_PATH=0 ./venv/bin/python -m playwright install chromium
-
-      - name: Prepare parser runtime (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Set-StrictMode -Version Latest
-          cd topar-desktop/src-tauri/parser_engine
-          python -m venv venv
-          .\venv\Scripts\python -m pip install --upgrade pip
-          .\venv\Scripts\python -m pip install -r requirements.txt
-          $env:PLAYWRIGHT_BROWSERS_PATH = "0"
-          .\venv\Scripts\python -m playwright install chromium
-
       - name: Build production desktop app
         working-directory: topar-desktop
         run: npm run tauri:build

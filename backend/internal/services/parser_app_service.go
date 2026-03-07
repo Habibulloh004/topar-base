@@ -1334,7 +1334,9 @@ func detectBotProtectionReason(statusCode int, contentType string, body []byte) 
 		{token: "checking your browser", reason: "anti-bot browser challenge"},
 		{token: "cloudflare", reason: "cloudflare challenge"},
 		{token: "cf-chl", reason: "cloudflare challenge"},
-		{token: "captcha", reason: "captcha challenge"},
+		{token: "g-recaptcha", reason: "captcha challenge"},
+		{token: "hcaptcha", reason: "captcha challenge"},
+		{token: "captcha challenge", reason: "captcha challenge"},
 		{token: "access denied", reason: "access denied"},
 		{token: "forbidden", reason: "forbidden"},
 	}
@@ -1343,6 +1345,12 @@ func detectBotProtectionReason(statusCode int, contentType string, body []byte) 
 		if strings.Contains(bodyLower, item.token) {
 			return item.reason
 		}
+	}
+	if strings.Contains(bodyLower, "captcha") &&
+		(strings.Contains(bodyLower, "verify you are human") ||
+			strings.Contains(bodyLower, "подтвердите, что вы человек") ||
+			strings.Contains(bodyLower, "i'm not a robot")) {
+		return "captcha challenge"
 	}
 
 	if statusCode == http.StatusForbidden || statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {

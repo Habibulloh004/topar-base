@@ -1258,7 +1258,7 @@ func (s *ParserAppService) parseURLs(
 		if storeErr != nil || len(batch) == 0 {
 			return
 		}
-		if err := s.parserRepo.AppendRunRecords(parseCtx, runID, batch); err != nil {
+		if err := s.parserRepo.AppendRunRecords(ctx, runID, batch); err != nil {
 			storeErr = err
 			cancel()
 			return

@@ -35,6 +35,7 @@ const aliases = {
 const MAX_TABLE_CELL_SYMBOLS = 100;
 const STORAGE_KEY = "topar_parser_app_state_v1";
 let persistTimer = null;
+const API_PREFIX = resolveApiPrefix();
 
 init().catch((err) => {
   setStatus(refs.parseStatus, `Ошибка инициализации: ${err.message}`, true);
@@ -629,7 +630,7 @@ async function api(path, options = {}) {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(path, {
+  const response = await fetch(buildApiUrl(path), {
     ...options,
     headers,
   });
@@ -639,4 +640,18 @@ async function api(path, options = {}) {
     throw new Error(payload.error || `Ошибка запроса (${response.status})`);
   }
   return payload;
+}
+
+function resolveApiPrefix() {
+  const { pathname } = window.location;
+  return pathname.startsWith("/api/") ? "/api" : "";
+}
+
+function buildApiUrl(path) {
+  const raw = String(path || "");
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    return raw;
+  }
+  const normalizedPath = raw.startsWith("/") ? raw : `/${raw}`;
+  return `${API_PREFIX}${normalizedPath}`;
 }

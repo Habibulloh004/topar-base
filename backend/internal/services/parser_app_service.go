@@ -1436,6 +1436,15 @@ func (s *ParserAppService) fetchBody(
 			time.Sleep(backoffDuration(attempt, false))
 			continue
 		}
+		if isRateLimitedBody(resp.StatusCode, resp.Header.Get("Content-Type"), body) {
+			wait := backoffDuration(attempt, true)
+			if attempt == maxAttempts {
+				return nil, resp.Header.Get("Content-Type"), http.StatusTooManyRequests, retries, errors.New("rate limited")
+			}
+			retries++
+			time.Sleep(wait)
+			continue
+		}
 		if enableMirrorFallback {
 			reason := detectBotProtectionReason(resp.StatusCode, resp.Header.Get("Content-Type"), body)
 			if reason != "" {
@@ -1501,6 +1510,15 @@ func (s *ParserAppService) fetchViaMirrorProxy(
 			time.Sleep(backoffDuration(attempt, false))
 			continue
 		}
+		if isRateLimitedBody(resp.StatusCode, resp.Header.Get("Content-Type"), body) {
+			wait := backoffDuration(attempt, true)
+			if attempt == maxAttempts {
+				return nil, resp.Header.Get("Content-Type"), http.StatusTooManyRequests, retries, errors.New("proxy rate limited")
+			}
+			retries++
+			time.Sleep(wait)
+			continue
+		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			if attempt == maxAttempts {
@@ -1559,6 +1577,36 @@ func parseRetryAfter(value string) time.Duration {
 		}
 	}
 	return 0
+}
+
+func isRateLimitedBody(statusCode int, contentType string, body []byte) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	if ct != "" && !strings.Contains(ct, "text/html") && !strings.Contains(ct, "text/plain") {
+		return false
+	}
+
+	preview := strings.ToLower(string(body))
+	if len(preview) > 32*1024 {
+		preview = preview[:32*1024]
+	}
+
+	if strings.Contains(preview, "too many requests") {
+		return true
+	}
+	if strings.Contains(preview, "you've made too many requests") {
+		return true
+	}
+	if strings.Contains(preview, "rate limit exceeded") {
+		return true
+	}
+	if strings.Contains(preview, "429 too many requests") {
+		return true
+	}
+	return false
 }
 
 type hostRateLimiter struct {

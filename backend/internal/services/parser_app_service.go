@@ -68,6 +68,22 @@ type ParserRunExecution struct {
 	Sample []models.ParserRecord `json:"sample"`
 }
 
+const (
+	parserMaxProducts        = 1_000_000
+	parserMaxDiscoveredURLs  = 1_000_000
+	parserDefaultMaxSitemaps = 500
+	parserMaxSitemaps        = 100_000
+	parserRecordFlushBatch   = 500
+	parserSampleSize         = 20
+)
+
+type parserURLParseResult struct {
+	ParsedCount      int
+	RateLimitRetries int
+	Sample           []models.ParserRecord
+	DetectedFields   []string
+}
+
 type ParserAppService struct {
 	parserRepo *repository.ParserAppRepository
 	eksmoRepo  *repository.EksmoProductRepository
@@ -109,9 +125,9 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 	if limit < 0 {
 		limit = 0
 	}
-	// limit=0 means "full parse" (no explicit admin cap).
-	if limit > 20000 {
-		limit = 20000
+	// limit=0 means "full parse", but we still guard to 1M products.
+	if limit > parserMaxProducts {
+		limit = parserMaxProducts
 	}
 
 	workers := req.Workers
@@ -135,10 +151,10 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 
 	maxSitemaps := req.MaxSitemaps
 	if maxSitemaps < 1 {
-		maxSitemaps = 120
+		maxSitemaps = parserDefaultMaxSitemaps
 	}
-	if maxSitemaps > 2000 {
-		maxSitemaps = 2000
+	if maxSitemaps > parserMaxSitemaps {
+		maxSitemaps = parserMaxSitemaps
 	}
 
 	run, err := s.parserRepo.CreateRun(ctx, models.ParserRun{
@@ -165,28 +181,18 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 		urls = []string{sourceURL}
 	}
 
-	records, rateRetries, parseErr := s.parseURLs(ctx, run.ID, urls, workers, rps, limit)
+	parseResult, parseErr := s.parseURLs(ctx, run.ID, urls, workers, rps, limit)
 	if parseErr != nil {
-		_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), 0, rateRetries, parseErr.Error())
+		_ = s.parserRepo.FinishRun(ctx, run.ID, parseResult.DetectedFields, len(urls), parseResult.ParsedCount, parseResult.RateLimitRetries, parseErr.Error())
 		return ParserRunExecution{}, parseErr
 	}
-	if len(records) == 0 {
+	if parseResult.ParsedCount == 0 {
 		if blockErr := s.detectSourceBlocking(ctx, sourceURL); blockErr != nil {
-			_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), 0, rateRetries, blockErr.Error())
+			_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), 0, parseResult.RateLimitRetries, blockErr.Error())
 			return ParserRunExecution{}, blockErr
 		}
 	}
-	if limit > 0 && len(records) > limit {
-		records = records[:limit]
-	}
-
-	if err := s.parserRepo.ReplaceRunRecords(ctx, run.ID, records); err != nil {
-		_ = s.parserRepo.FinishRun(ctx, run.ID, nil, len(urls), len(records), rateRetries, err.Error())
-		return ParserRunExecution{}, err
-	}
-
-	detectedFields := collectDetectedFields(records)
-	if err := s.parserRepo.FinishRun(ctx, run.ID, detectedFields, len(urls), len(records), rateRetries, ""); err != nil {
+	if err := s.parserRepo.FinishRun(ctx, run.ID, parseResult.DetectedFields, len(urls), parseResult.ParsedCount, parseResult.RateLimitRetries, ""); err != nil {
 		return ParserRunExecution{}, err
 	}
 
@@ -198,12 +204,7 @@ func (s *ParserAppService) ParseAndStore(ctx context.Context, req ParserParseReq
 		return ParserRunExecution{}, errors.New("parser run not found after save")
 	}
 
-	sample := records
-	if len(sample) > 20 {
-		sample = sample[:20]
-	}
-
-	return ParserRunExecution{Run: updatedRun, Sample: sample}, nil
+	return ParserRunExecution{Run: updatedRun, Sample: parseResult.Sample}, nil
 }
 
 func (s *ParserAppService) GetTargetSchema() models.ParserTargetSchema {
@@ -494,13 +495,13 @@ func (s *ParserAppService) discoverCandidateURLs(
 	unlimited := limit <= 0
 	maxURLs := limit * 200
 	if unlimited {
-		maxURLs = 20000
+		maxURLs = parserMaxDiscoveredURLs
 	} else {
 		if maxURLs < 1200 {
 			maxURLs = 1200
 		}
-		if maxURLs > 20000 {
-			maxURLs = 20000
+		if maxURLs > parserMaxDiscoveredURLs {
+			maxURLs = parserMaxDiscoveredURLs
 		}
 	}
 
@@ -593,12 +594,12 @@ func (s *ParserAppService) discoverCandidateURLs(
 	if len(seenURLs) < minCandidates || productLikeCandidates < minProductCandidates {
 		crawlMaxPages := limit * 8
 		if unlimited {
-			crawlMaxPages = 1500
+			crawlMaxPages = 8000
 		} else if crawlMaxPages < 60 {
 			crawlMaxPages = 60
 		}
-		if crawlMaxPages > 5000 {
-			crawlMaxPages = 5000
+		if crawlMaxPages > 250000 {
+			crawlMaxPages = 250000
 		}
 		crawlCollect := maxURLs - len(seenURLs)
 		if crawlCollect < minProductCandidates {
@@ -660,8 +661,8 @@ func (s *ParserAppService) discoverCandidateURLs(
 		if maxReturn < 600 {
 			maxReturn = 600
 		}
-		if maxReturn > 10000 {
-			maxReturn = 10000
+		if maxReturn > maxURLs {
+			maxReturn = maxURLs
 		}
 	}
 	if len(allURLs) > maxReturn {
@@ -1110,12 +1111,16 @@ func (s *ParserAppService) parseURLs(
 	workers int,
 	rps float64,
 	targetCount int,
-) ([]models.ParserRecord, int, error) {
+) (parserURLParseResult, error) {
+	result := parserURLParseResult{}
 	if len(urls) == 0 {
-		return nil, 0, nil
+		return result, nil
 	}
 	if targetCount < 0 {
 		targetCount = 0
+	}
+	if targetCount > parserMaxProducts {
+		targetCount = parserMaxProducts
 	}
 
 	parseCtx, cancel := context.WithCancel(ctx)
@@ -1128,7 +1133,7 @@ func (s *ParserAppService) parseURLs(
 	}
 
 	jobs := make(chan string, maxInt(workers*2, 8))
-	results := make(chan parseItem, len(urls))
+	results := make(chan parseItem, maxInt(workers*8, 64))
 	var wg sync.WaitGroup
 	var retryMu sync.Mutex
 	totalRetries := 0
@@ -1137,6 +1142,14 @@ func (s *ParserAppService) parseURLs(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			emit := func(item parseItem) bool {
+				select {
+				case results <- item:
+					return true
+				case <-parseCtx.Done():
+					return false
+				}
+			}
 			for currentURL := range jobs {
 				body, _, status, retries, err := s.fetchBody(parseCtx, currentURL, limiter)
 				if retries > 0 {
@@ -1145,7 +1158,9 @@ func (s *ParserAppService) parseURLs(
 					retryMu.Unlock()
 				}
 				if err != nil || status >= 400 {
-					results <- parseItem{ok: false}
+					if !emit(parseItem{ok: false}) {
+						return
+					}
 					continue
 				}
 
@@ -1191,12 +1206,18 @@ func (s *ParserAppService) parseURLs(
 								Data:      fallbackData,
 								CreatedAt: time.Now().UTC(),
 							}
-							results <- parseItem{record: record, ok: true}
+							if !emit(parseItem{record: record, ok: true}) {
+								return
+							}
 						}
-						results <- parseItem{ok: false}
+						if !emit(parseItem{ok: false}) {
+							return
+						}
 						continue
 					}
-					results <- parseItem{ok: false}
+					if !emit(parseItem{ok: false}) {
+						return
+					}
 					continue
 				}
 				record := models.ParserRecord{
@@ -1205,7 +1226,9 @@ func (s *ParserAppService) parseURLs(
 					Data:      data,
 					CreatedAt: time.Now().UTC(),
 				}
-				results <- parseItem{record: record, ok: true}
+				if !emit(parseItem{record: record, ok: true}) {
+					return
+				}
 			}
 		}()
 	}
@@ -1226,36 +1249,75 @@ func (s *ParserAppService) parseURLs(
 		close(results)
 	}()
 
-	parsed := make([]models.ParserRecord, 0, len(urls))
+	batch := make([]models.ParserRecord, 0, parserRecordFlushBatch)
+	fieldSet := map[string]struct{}{}
 	seenSource := map[string]struct{}{}
+	var storeErr error
+
+	flushBatch := func() {
+		if storeErr != nil || len(batch) == 0 {
+			return
+		}
+		if err := s.parserRepo.AppendRunRecords(parseCtx, runID, batch); err != nil {
+			storeErr = err
+			cancel()
+			return
+		}
+		batch = batch[:0]
+	}
+
 	for item := range results {
+		if storeErr != nil {
+			continue
+		}
 		if !item.ok {
 			continue
 		}
-		if _, exists := seenSource[item.record.SourceURL]; exists {
+		if targetCount > 0 && result.ParsedCount >= targetCount {
+			cancel()
 			continue
 		}
-		seenSource[item.record.SourceURL] = struct{}{}
-		parsed = append(parsed, item.record)
-		if targetCount > 0 && len(parsed) >= targetCount {
+		sourceURL := strings.TrimSpace(item.record.SourceURL)
+		if sourceURL == "" {
+			continue
+		}
+		if _, exists := seenSource[sourceURL]; exists {
+			continue
+		}
+		seenSource[sourceURL] = struct{}{}
+
+		for key := range item.record.Data {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			fieldSet[key] = struct{}{}
+		}
+
+		if len(result.Sample) < parserSampleSize {
+			result.Sample = append(result.Sample, item.record)
+		}
+
+		batch = append(batch, item.record)
+		result.ParsedCount++
+
+		if len(batch) >= parserRecordFlushBatch {
+			flushBatch()
+		}
+		if targetCount > 0 && result.ParsedCount >= targetCount {
 			cancel()
 		}
 	}
+	flushBatch()
+	result.RateLimitRetries = totalRetries
 
-	sort.SliceStable(parsed, func(i, j int) bool {
-		iScore := scoreProductURL(parsed[i].SourceURL)
-		jScore := scoreProductURL(parsed[j].SourceURL)
-		if iScore == jScore {
-			return parsed[i].SourceURL < parsed[j].SourceURL
-		}
-		return iScore > jScore
-	})
-
-	if targetCount > 0 && len(parsed) > targetCount {
-		parsed = parsed[:targetCount]
+	if storeErr != nil {
+		result.DetectedFields = collectDetectedFieldsFromSet(fieldSet)
+		return result, storeErr
 	}
 
-	return parsed, totalRetries, nil
+	result.DetectedFields = collectDetectedFieldsFromSet(fieldSet)
+	return result, nil
 }
 
 func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL string) error {
@@ -1717,6 +1779,10 @@ func (s *ParserAppService) discoverBookUZCatalogURLs(
 	page := 1
 	perPage := 100
 	maxPages := 1500
+	if target > perPage*maxPages {
+		requiredPages := (target + perPage - 1) / perPage
+		maxPages = minInt(requiredPages+20, 10000)
+	}
 
 	for page <= maxPages && len(result) < target {
 		select {
@@ -4165,6 +4231,22 @@ func collectDetectedFields(records []models.ParserRecord) []string {
 	}
 	fields := make([]string, 0, len(fieldSet))
 	for key := range fieldSet {
+		fields = append(fields, key)
+	}
+	sort.Strings(fields)
+	return fields
+}
+
+func collectDetectedFieldsFromSet(fieldSet map[string]struct{}) []string {
+	if len(fieldSet) == 0 {
+		return nil
+	}
+	fields := make([]string, 0, len(fieldSet))
+	for key := range fieldSet {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
 		fields = append(fields, key)
 	}
 	sort.Strings(fields)

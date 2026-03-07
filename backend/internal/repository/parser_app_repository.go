@@ -136,6 +136,17 @@ func (r *ParserAppRepository) ReplaceRunRecords(
 	if _, err := r.records.DeleteMany(ctx, bson.M{"runId": runID}); err != nil {
 		return err
 	}
+	return r.AppendRunRecords(ctx, runID, records)
+}
+
+func (r *ParserAppRepository) AppendRunRecords(
+	ctx context.Context,
+	runID primitive.ObjectID,
+	records []models.ParserRecord,
+) error {
+	if runID.IsZero() {
+		return errors.New("run id is required")
+	}
 	if len(records) == 0 {
 		return nil
 	}
@@ -160,7 +171,6 @@ func (r *ParserAppRepository) ReplaceRunRecords(
 			return err
 		}
 	}
-
 	return nil
 }
 

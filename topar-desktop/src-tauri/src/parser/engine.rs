@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::thread;
@@ -63,15 +64,17 @@ struct ParsedRecord {
 pub struct ParserEngine {
     db: Arc<Database>,
     progress: ProgressTracker,
+    parser_engine_dir: PathBuf,
     python_process: Option<Child>,
     current_run_id: Option<String>,
 }
 
 impl ParserEngine {
-    pub fn new(db: Arc<Database>, progress: ProgressTracker) -> Self {
+    pub fn new(db: Arc<Database>, progress: ProgressTracker, parser_engine_dir: PathBuf) -> Self {
         Self {
             db,
             progress,
+            parser_engine_dir,
             python_process: None,
             current_run_id: None,
         }
@@ -105,26 +108,23 @@ impl ParserEngine {
         };
 
         // Save to database
-        self.db.insert_run(&run)
+        self.db
+            .insert_run(&run)
             .context("Failed to save run to database")?;
         self.current_run_id = Some(run_id.clone());
 
         // Spawn Python parser process
-        let app_dir = std::env::current_exe()?
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Cannot find app directory"))?
-            .to_path_buf();
-
-        let parser_dir = app_dir.join("parser_engine");
+        let parser_dir = self.parser_engine_dir.clone();
         let parser_script = parser_dir.join("main.py");
+        if !parser_script.exists() {
+            return Err(anyhow::anyhow!(
+                "Parser script not found at {}",
+                parser_script.display()
+            ));
+        }
 
         // Use venv Python if available, otherwise system Python
-        let python_cmd = parser_dir.join("venv").join("bin").join("python");
-        let python_cmd = if python_cmd.exists() {
-            python_cmd.to_string_lossy().to_string()
-        } else {
-            self.find_python_command()?
-        };
+        let python_cmd = self.find_python_command(&parser_dir)?;
 
         let mut child = Command::new(python_cmd)
             .arg(&parser_script)
@@ -139,13 +139,17 @@ impl ParserEngine {
             .arg(request.requests_per_sec.to_string())
             .arg("--max-sitemaps")
             .arg(request.max_sitemaps.to_string())
+            .current_dir(&parser_dir)
+            .env("PYTHONPATH", &parser_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .context("Failed to spawn Python parser process")?;
 
         // Read output in background thread
-        let stdout = child.stdout.take()
+        let stdout = child
+            .stdout
+            .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
 
         let db = self.db.clone();
@@ -194,9 +198,9 @@ impl ParserEngine {
                                     p.error = None;
                                 } else {
                                     p.status = ParserStatus::Failed;
-                                    p.error = Some(
-                                        error_message.unwrap_or_else(|| "Parsing cancelled by user".to_string())
-                                    );
+                                    p.error = Some(error_message.unwrap_or_else(|| {
+                                        "Parsing cancelled by user".to_string()
+                                    }));
                                 }
                             });
                         }
@@ -249,7 +253,8 @@ impl ParserEngine {
                     "Failed to interrupt parser process".to_string()
                 });
                 run.finished_at = Some(chrono::Utc::now());
-                self.db.update_run(&run)
+                self.db
+                    .update_run(&run)
                     .context("Failed to update cancelled run")?;
             }
         }
@@ -345,11 +350,7 @@ impl ParserEngine {
         }
     }
 
-    async fn save_results(
-        db: &Arc<Database>,
-        run_id: &str,
-        result: ParserResult,
-    ) -> Result<()> {
+    async fn save_results(db: &Arc<Database>, run_id: &str, result: ParserResult) -> Result<()> {
         // Convert parsed records to Record model
         let records: Vec<Record> = result
             .records
@@ -381,27 +382,46 @@ impl ParserEngine {
                 run.error = None;
             } else {
                 run.status = "failed".to_string();
-                run.error = Some(result.error.unwrap_or_else(|| "Parsing cancelled by user".to_string()));
+                run.error = Some(
+                    result
+                        .error
+                        .unwrap_or_else(|| "Parsing cancelled by user".to_string()),
+                );
             }
             run.finished_at = Some(chrono::Utc::now());
 
-            db.update_run(&run)
-                .context("Failed to update run")?;
+            db.update_run(&run).context("Failed to update run")?;
         }
 
         Ok(())
     }
 
-    fn find_python_command(&self) -> Result<String> {
+    fn find_python_command(&self, parser_dir: &Path) -> Result<String> {
+        let venv_candidates = vec![
+            parser_dir.join("venv").join("bin").join("python"),
+            parser_dir.join("venv").join("bin").join("python3"),
+            parser_dir.join("venv").join("Scripts").join("python.exe"),
+        ];
+
+        for candidate in venv_candidates {
+            if candidate.exists()
+                && Command::new(&candidate)
+                    .arg("--version")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+            {
+                return Ok(candidate.to_string_lossy().to_string());
+            }
+        }
+
         // Try common Python commands
         let candidates = vec!["python3", "python"];
 
         for cmd in candidates {
-            if Command::new(cmd)
-                .arg("--version")
-                .output()
-                .is_ok()
-            {
+            if Command::new(cmd).arg("--version").output().is_ok() {
                 return Ok(cmd.to_string());
             }
         }

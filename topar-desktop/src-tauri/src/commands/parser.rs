@@ -1,4 +1,4 @@
-use crate::parser::{ParserEngine, ParserProgress, ParserStatus, progress::ProgressTracker};
+use crate::parser::{progress::ProgressTracker, ParserEngine, ParserProgress, ParserStatus};
 use crate::AppState;
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -63,7 +63,11 @@ pub async fn start_parsing(
     let rps = request.requests_per_sec.clamp(1.0, 20.0);
 
     // Create parser engine
-    let mut engine = ParserEngine::new(state.db.clone(), PROGRESS_TRACKER.clone());
+    let mut engine = ParserEngine::new(
+        state.db.clone(),
+        PROGRESS_TRACKER.clone(),
+        state.parser_engine_dir.clone(),
+    );
 
     // Start parsing
     let parse_request = crate::parser::engine::ParseRequest {
@@ -105,7 +109,8 @@ pub async fn get_parser_status() -> Result<ParserProgress, String> {
 pub async fn stop_parsing() -> Result<(), String> {
     let mut parser_lock = PARSER_STATE.lock();
     if let Some(engine) = parser_lock.as_mut() {
-        engine.stop()
+        engine
+            .stop()
             .map_err(|e| format!("Failed to stop parser: {}", e))?;
     }
     *parser_lock = None;

@@ -1259,20 +1259,10 @@ func (s *ParserAppService) parseURLs(
 }
 
 func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL string) error {
-	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, sourceURL, nil)
-	if err != nil {
-		return nil
-	}
-	req.Header.Set("User-Agent", s.userAgent)
-	req.Header.Set("Accept", "text/html,application/xml,text/xml,application/json;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
-	req.Header.Set("Cache-Control", "no-cache")
-	req.Header.Set("Pragma", "no-cache")
-
-	resp, err := s.httpClient.Do(req)
+	body, contentType, status, _, err := s.fetchBody(probeCtx, sourceURL, nil)
 	if err != nil {
 		reason := detectFetchErrorReason(err)
 		if reason == "" {
@@ -1280,14 +1270,7 @@ func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL s
 		}
 		return fmt.Errorf("source website is not reachable from server-side parser (%s). Use desktop parser for this source or configure a trusted outbound proxy", reason)
 	}
-	defer resp.Body.Close()
-
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
-	if readErr != nil {
-		return fmt.Errorf("source website response cannot be read from server-side parser (%s). Use desktop parser for this source or configure a trusted outbound proxy", readErr.Error())
-	}
-
-	reason := detectBotProtectionReason(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+	reason := detectBotProtectionReason(status, contentType, body)
 	if reason == "" {
 		return nil
 	}
@@ -1385,6 +1368,8 @@ func (s *ParserAppService) fetchBody(
 	if host == "" {
 		return nil, "", 0, 0, errors.New("invalid host")
 	}
+	hostname := strings.ToLower(parsedURL.Hostname())
+	enableMirrorFallback := shouldUseMirrorFallback(hostname)
 
 	maxAttempts := 3
 	retries := 0
@@ -1406,6 +1391,9 @@ func (s *ParserAppService) fetchBody(
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			if attempt == maxAttempts {
+				if enableMirrorFallback {
+					return s.fetchViaMirrorProxy(ctx, rawURL, limiter, retries)
+				}
 				return nil, "", 0, retries, err
 			}
 			retries++
@@ -1431,16 +1419,94 @@ func (s *ParserAppService) fetchBody(
 		_ = resp.Body.Close()
 		if readErr != nil {
 			if attempt == maxAttempts {
+				if enableMirrorFallback {
+					return s.fetchViaMirrorProxy(ctx, rawURL, limiter, retries)
+				}
 				return nil, resp.Header.Get("Content-Type"), resp.StatusCode, retries, readErr
 			}
 			retries++
 			time.Sleep(backoffDuration(attempt, false))
 			continue
 		}
+		if enableMirrorFallback {
+			reason := detectBotProtectionReason(resp.StatusCode, resp.Header.Get("Content-Type"), body)
+			if reason != "" {
+				return s.fetchViaMirrorProxy(ctx, rawURL, limiter, retries)
+			}
+		}
 		return body, resp.Header.Get("Content-Type"), resp.StatusCode, retries, nil
 	}
 
 	return nil, "", 0, retries, errors.New("request attempts exhausted")
+}
+
+func shouldUseMirrorFallback(hostname string) bool {
+	host := strings.ToLower(strings.TrimSpace(hostname))
+	if host == "" {
+		return false
+	}
+	return host == "chitai-gorod.ru" || strings.HasSuffix(host, ".chitai-gorod.ru")
+}
+
+func (s *ParserAppService) fetchViaMirrorProxy(
+	ctx context.Context,
+	rawURL string,
+	limiter *hostRateLimiter,
+	retries int,
+) ([]byte, string, int, int, error) {
+	const proxyHost = "api.codetabs.com"
+	proxyURL := "https://api.codetabs.com/v1/proxy/?quest=" + url.QueryEscape(rawURL)
+
+	maxAttempts := 2
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if limiter != nil {
+			limiter.Wait(proxyHost)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyURL, nil)
+		if err != nil {
+			return nil, "", 0, retries, err
+		}
+		req.Header.Set("User-Agent", s.userAgent)
+		req.Header.Set("Accept", "text/html,application/xml,text/xml,application/json;q=0.9,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+		req.Header.Set("Cache-Control", "no-cache")
+		req.Header.Set("Pragma", "no-cache")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			if attempt == maxAttempts {
+				return nil, "", 0, retries, err
+			}
+			retries++
+			time.Sleep(backoffDuration(attempt, true))
+			continue
+		}
+
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if attempt == maxAttempts {
+				return nil, resp.Header.Get("Content-Type"), resp.StatusCode, retries, readErr
+			}
+			retries++
+			time.Sleep(backoffDuration(attempt, false))
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			if attempt == maxAttempts {
+				return nil, resp.Header.Get("Content-Type"), resp.StatusCode, retries, fmt.Errorf("proxy status %d", resp.StatusCode)
+			}
+			retries++
+			time.Sleep(backoffDuration(attempt, false))
+			continue
+		}
+
+		return body, resp.Header.Get("Content-Type"), resp.StatusCode, retries, nil
+	}
+
+	return nil, "", 0, retries, errors.New("mirror proxy attempts exhausted")
 }
 
 func shouldRetryStatus(status int) bool {

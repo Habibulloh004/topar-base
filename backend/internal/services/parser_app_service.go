@@ -1259,7 +1259,10 @@ func (s *ParserAppService) parseURLs(
 }
 
 func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	probeCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return nil
 	}
@@ -1271,13 +1274,17 @@ func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL s
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil
+		reason := detectFetchErrorReason(err)
+		if reason == "" {
+			return nil
+		}
+		return fmt.Errorf("source website is not reachable from server-side parser (%s). Use desktop parser for this source or configure a trusted outbound proxy", reason)
 	}
 	defer resp.Body.Close()
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
 	if readErr != nil {
-		return nil
+		return fmt.Errorf("source website response cannot be read from server-side parser (%s). Use desktop parser for this source or configure a trusted outbound proxy", readErr.Error())
 	}
 
 	reason := detectBotProtectionReason(resp.StatusCode, resp.Header.Get("Content-Type"), body)
@@ -1286,6 +1293,47 @@ func (s *ParserAppService) detectSourceBlocking(ctx context.Context, sourceURL s
 	}
 
 	return fmt.Errorf("source website is protected from server-side parsing (%s). Use desktop parser for this source or configure a trusted outbound proxy", reason)
+}
+
+func detectFetchErrorReason(err error) string {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "request timeout"
+	}
+
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if urlErr.Timeout() {
+			return "request timeout"
+		}
+		if urlErr.Err != nil {
+			msg := strings.TrimSpace(urlErr.Err.Error())
+			if msg != "" {
+				return msg
+			}
+		}
+	}
+
+	msg := strings.TrimSpace(strings.ToLower(err.Error()))
+	if msg == "" {
+		return ""
+	}
+	if strings.Contains(msg, "timeout") {
+		return "request timeout"
+	}
+	if strings.Contains(msg, "connection refused") {
+		return "connection refused"
+	}
+	if strings.Contains(msg, "no such host") {
+		return "dns resolve failed"
+	}
+	if strings.Contains(msg, "network is unreachable") {
+		return "network unreachable"
+	}
+	if strings.Contains(msg, "tls") {
+		return "tls handshake failed"
+	}
+	return msg
 }
 
 func detectBotProtectionReason(statusCode int, contentType string, body []byte) string {

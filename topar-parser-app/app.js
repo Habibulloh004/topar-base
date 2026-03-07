@@ -620,7 +620,7 @@ function escapeHTML(value) {
 
 function setStatus(target, text, isError = false) {
   target.textContent = text || "";
-  target.style.color = isError ? "#b42318" : "#35515a";
+  target.style.color = isError ? "#a32a2a" : "#4d4779";
 }
 
 async function api(path, options = {}) {

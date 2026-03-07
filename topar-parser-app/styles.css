@@ -1,11 +1,14 @@
 :root {
-  --bg: #f4f0e6;
-  --ink: #1a1e22;
-  --card: #fffdf8;
-  --line: #d7cdc0;
-  --accent: #0c8a6b;
-  --accent-2: #d95f18;
-  --shadow: 0 14px 35px rgba(40, 34, 28, 0.12);
+  --bg: #eceaf7;
+  --ink: #24213d;
+  --card: rgba(255, 255, 255, 0.92);
+  --line: #d9d6ec;
+  --accent: #6f63f6;
+  --accent-hover: #5d51e3;
+  --accent-soft: #f1efff;
+  --accent-soft-border: #d3cff2;
+  --danger: #a32a2a;
+  --shadow: 0 8px 24px rgba(73, 57, 138, 0.1);
 }
 
 * {
@@ -14,17 +17,15 @@
 
 body {
   margin: 0;
-  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
   color: var(--ink);
-  background: var(--bg);
+  background: linear-gradient(165deg, #f0eff8 0%, #e8e6f5 60%, #e5e2f8 100%);
 }
 
 .background {
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at 10% -20%, #ffd8b2 0%, transparent 40%),
-    radial-gradient(circle at 95% 10%, #b9f2dd 0%, transparent 35%),
-    linear-gradient(140deg, #f4f0e6, #e9f2f0 60%, #f7f1e3);
+  background: linear-gradient(165deg, #f0eff8 0%, #e8e6f5 60%, #e5e2f8 100%);
   z-index: -1;
 }
 
@@ -42,7 +43,7 @@ body {
 
 .hero p {
   margin: 8px 0 0;
-  color: #586068;
+  color: #6e6a92;
 }
 
 .card {
@@ -81,7 +82,7 @@ button {
 input:focus,
 select:focus,
 button:focus {
-  outline: 2px solid rgba(12, 138, 107, 0.25);
+  outline: 2px solid rgba(111, 99, 246, 0.2);
   outline-offset: 1px;
 }
 
@@ -91,19 +92,29 @@ button {
 }
 
 .primary {
-  background: linear-gradient(110deg, var(--accent), #0d7f97);
+  background: var(--accent);
   color: #fff;
-  border: 0;
+  border-color: var(--accent-hover);
+}
+
+.primary:hover {
+  background: var(--accent-hover);
 }
 
 .ghost {
-  background: #f9f4eb;
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-border);
+  color: var(--ink);
+}
+
+.ghost:hover {
+  background: #e6e2ff;
 }
 
 .status {
   min-height: 24px;
   margin-top: 10px;
-  color: #4f5f62;
+  color: #4d4779;
   white-space: pre-wrap;
 }
 
@@ -126,11 +137,12 @@ button {
 }
 
 .chip {
-  border: 1px solid #c6d9d3;
+  border: 1px solid var(--accent-soft-border);
   border-radius: 99px;
   padding: 4px 10px;
   font-size: 0.75rem;
-  background: #f0faf7;
+  background: var(--accent-soft);
+  color: #3f3a66;
 }
 
 .schema-list {
@@ -155,7 +167,7 @@ button {
 
 .target-group h3 {
   margin: 10px 0 8px;
-  color: #0d7767;
+  color: #3f3a66;
 }
 
 .target-group ul {
@@ -172,7 +184,7 @@ button {
 
 .hint {
   margin: 8px 0 12px;
-  color: #516369;
+  color: #6e6a92;
   font-size: 0.9rem;
 }
 
@@ -189,16 +201,16 @@ button {
 }
 
 .mapping-column {
-  border: 1px solid #eadfce;
+  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
-  background: #fffdf9;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .mapping-section-title {
   font-size: 0.96rem;
   font-weight: 800;
-  color: #0d7767;
+  color: #3f3a66;
   margin: 2px 0 8px;
 }
 
@@ -220,7 +232,7 @@ button {
   font-family: "Menlo", "Consolas", monospace;
   font-size: 0.85rem;
   font-weight: 600;
-  color: #243034;
+  color: #3f3a66;
 }
 
 .mapping-footer {
@@ -251,6 +263,7 @@ button {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 table {
@@ -261,7 +274,7 @@ table {
 
 th,
 td {
-  border-bottom: 1px solid #efe4d7;
+  border-bottom: 1px solid var(--line);
   text-align: left;
   padding: 8px;
   vertical-align: top;
@@ -269,7 +282,7 @@ td {
 }
 
 th {
-  background: #f8f3ea;
+  background: var(--accent-soft);
 }
 
 @media (max-width: 980px) {

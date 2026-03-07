@@ -125,6 +125,7 @@ impl ParserEngine {
 
         // Use venv Python if available, otherwise system Python
         let python_cmd = self.find_python_command(&parser_dir)?;
+        self.verify_python_runtime(&python_cmd, &parser_dir)?;
 
         let mut child = Command::new(python_cmd)
             .arg(&parser_script)
@@ -151,10 +152,65 @@ impl ParserEngine {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Failed to capture stderr"))?;
 
         let db = self.db.clone();
         let progress = self.progress.clone();
         let run_id_clone = run_id.clone();
+        let db_err = self.db.clone();
+        let progress_err = self.progress.clone();
+        let run_id_err = run_id.clone();
+
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines: Vec<String> = Vec::new();
+
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l.trim().to_string(),
+                    Err(_) => break,
+                };
+                if line.is_empty() {
+                    continue;
+                }
+                lines.push(line);
+                if lines.len() > 20 {
+                    lines.remove(0);
+                }
+            }
+
+            if lines.is_empty() {
+                return;
+            }
+
+            let snapshot = progress_err.get();
+            if snapshot.status != ParserStatus::Running {
+                return;
+            }
+
+            let message = lines
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "Parser process failed".to_string());
+            progress_err.update(|p| {
+                if p.status == ParserStatus::Running {
+                    p.status = ParserStatus::Failed;
+                    p.error = Some(message.clone());
+                }
+            });
+
+            if let Ok(Some(mut run)) = db_err.get_run(&run_id_err) {
+                if run.status == "running" {
+                    run.status = "failed".to_string();
+                    run.error = Some(lines.join(" | "));
+                    run.finished_at = Some(chrono::Utc::now());
+                    let _ = db_err.update_run(&run);
+                }
+            }
+        });
 
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -428,6 +484,35 @@ impl ParserEngine {
 
         Err(anyhow::anyhow!(
             "Python 3 not found. Please install Python 3.11 or later."
+        ))
+    }
+
+    fn verify_python_runtime(&self, python_cmd: &str, parser_dir: &Path) -> Result<()> {
+        let output = Command::new(python_cmd)
+            .arg("-c")
+            .arg("import bs4, lxml, requests, playwright.async_api")
+            .current_dir(parser_dir)
+            .env("PYTHONPATH", parser_dir)
+            .output()
+            .context("Failed to execute Python runtime check")?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let details = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "required Python packages are missing".to_string()
+        };
+
+        Err(anyhow::anyhow!(
+            "Python parser runtime is not ready: {}. Install parser dependencies or rebuild app bundle with parser runtime included.",
+            details
         ))
     }
 

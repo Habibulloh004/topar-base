@@ -27,6 +27,7 @@ services:
       - shared_mongo
     volumes:
       - ./chitai-gorod-categories.json:/app/chitai-gorod-categories.json:ro
+      - ./topar-parser-app:/app/topar-parser-app:ro
       - ./uploads:/app/uploads
     ports:
       - "127.0.0.1:8080:8080"

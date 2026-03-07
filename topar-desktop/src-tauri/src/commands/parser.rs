@@ -67,6 +67,7 @@ pub async fn start_parsing(
         state.db.clone(),
         PROGRESS_TRACKER.clone(),
         state.parser_engine_dir.clone(),
+        state.parser_runtime_dir.clone(),
     );
 
     // Start parsing

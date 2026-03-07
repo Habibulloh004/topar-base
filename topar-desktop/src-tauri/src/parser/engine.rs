@@ -65,16 +65,23 @@ pub struct ParserEngine {
     db: Arc<Database>,
     progress: ProgressTracker,
     parser_engine_dir: PathBuf,
+    parser_runtime_dir: PathBuf,
     python_process: Option<Child>,
     current_run_id: Option<String>,
 }
 
 impl ParserEngine {
-    pub fn new(db: Arc<Database>, progress: ProgressTracker, parser_engine_dir: PathBuf) -> Self {
+    pub fn new(
+        db: Arc<Database>,
+        progress: ProgressTracker,
+        parser_engine_dir: PathBuf,
+        parser_runtime_dir: PathBuf,
+    ) -> Self {
         Self {
             db,
             progress,
             parser_engine_dir,
+            parser_runtime_dir,
             python_process: None,
             current_run_id: None,
         }
@@ -123,9 +130,9 @@ impl ParserEngine {
             ));
         }
 
-        // Use venv Python if available, otherwise system Python
-        let python_cmd = self.find_python_command(&parser_dir)?;
-        self.verify_python_runtime(&python_cmd, &parser_dir)?;
+        // Prefer persistent runtime venv in app data; bootstrap it if deps are missing.
+        let python_cmd = self.prepare_python_runtime(&parser_dir)?;
+        let browsers_path = self.parser_runtime_dir.join("playwright");
 
         let mut child = Command::new(python_cmd)
             .arg(&parser_script)
@@ -142,6 +149,7 @@ impl ParserEngine {
             .arg(request.max_sitemaps.to_string())
             .current_dir(&parser_dir)
             .env("PYTHONPATH", &parser_dir)
+            .env("PLAYWRIGHT_BROWSERS_PATH", &browsers_path)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -453,6 +461,28 @@ impl ParserEngine {
     }
 
     fn find_python_command(&self, parser_dir: &Path) -> Result<String> {
+        let runtime_candidates = vec![
+            self.parser_runtime_dir.join("venv").join("bin").join("python"),
+            self.parser_runtime_dir.join("venv").join("bin").join("python3"),
+            self.parser_runtime_dir
+                .join("venv")
+                .join("Scripts")
+                .join("python.exe"),
+        ];
+        for candidate in runtime_candidates {
+            if candidate.exists()
+                && Command::new(&candidate)
+                    .arg("--version")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|status| status.success())
+                    .unwrap_or(false)
+            {
+                return Ok(candidate.to_string_lossy().to_string());
+            }
+        }
+
         let venv_candidates = vec![
             parser_dir.join("venv").join("bin").join("python"),
             parser_dir.join("venv").join("bin").join("python3"),
@@ -485,6 +515,112 @@ impl ParserEngine {
         Err(anyhow::anyhow!(
             "Python 3 not found. Please install Python 3.11 or later."
         ))
+    }
+
+    fn find_system_python_command(&self) -> Result<String> {
+        let candidates = vec!["python3", "python"];
+        for cmd in candidates {
+            if Command::new(cmd)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false)
+            {
+                return Ok(cmd.to_string());
+            }
+        }
+        Err(anyhow::anyhow!(
+            "Python 3 not found. Please install Python 3.11 or later."
+        ))
+    }
+
+    fn prepare_python_runtime(&self, parser_dir: &Path) -> Result<String> {
+        let python_cmd = self.find_python_command(parser_dir)?;
+        if self.verify_python_runtime(&python_cmd, parser_dir).is_ok() {
+            return Ok(python_cmd);
+        }
+
+        self.bootstrap_parser_runtime(parser_dir)?;
+        let runtime_python = self.find_python_command(parser_dir)?;
+        self.verify_python_runtime(&runtime_python, parser_dir)?;
+        Ok(runtime_python)
+    }
+
+    fn bootstrap_parser_runtime(&self, parser_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(&self.parser_runtime_dir)
+            .context("Failed to create parser runtime directory")?;
+
+        let system_python = self.find_system_python_command()?;
+        let runtime_venv = self.parser_runtime_dir.join("venv");
+        let runtime_python = if cfg!(windows) {
+            runtime_venv.join("Scripts").join("python.exe")
+        } else {
+            runtime_venv.join("bin").join("python")
+        };
+
+        if !runtime_python.exists() {
+            Command::new(&system_python)
+                .arg("-m")
+                .arg("venv")
+                .arg("--copies")
+                .arg(&runtime_venv)
+                .status()
+                .context("Failed to create parser runtime venv")?
+                .success()
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Failed to create parser runtime venv"))?;
+        }
+
+        let requirements_path = parser_dir.join("requirements.txt");
+        if !requirements_path.exists() {
+            return Err(anyhow::anyhow!(
+                "Parser requirements.txt not found at {}",
+                requirements_path.display()
+            ));
+        }
+
+        Command::new(&runtime_python)
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("--upgrade")
+            .arg("pip")
+            .status()
+            .context("Failed to upgrade pip in parser runtime")?
+            .success()
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("Failed to upgrade pip in parser runtime"))?;
+
+        Command::new(&runtime_python)
+            .arg("-m")
+            .arg("pip")
+            .arg("install")
+            .arg("-r")
+            .arg(&requirements_path)
+            .status()
+            .context("Failed to install parser requirements")?
+            .success()
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("Failed to install parser requirements"))?;
+
+        let browsers_path = self.parser_runtime_dir.join("playwright");
+        std::fs::create_dir_all(&browsers_path)
+            .context("Failed to create Playwright browser cache directory")?;
+        Command::new(&runtime_python)
+            .arg("-m")
+            .arg("playwright")
+            .arg("install")
+            .arg("chromium")
+            .env("PLAYWRIGHT_BROWSERS_PATH", &browsers_path)
+            .status()
+            .context("Failed to install Playwright Chromium runtime")?
+            .success()
+            .then_some(())
+            .ok_or_else(|| anyhow::anyhow!("Failed to install Playwright Chromium runtime"))?;
+
+        Ok(())
     }
 
     fn verify_python_runtime(&self, python_cmd: &str, parser_dir: &Path) -> Result<()> {

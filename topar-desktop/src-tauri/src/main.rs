@@ -16,6 +16,7 @@ use db::Database;
 pub struct AppState {
     pub db: Arc<Database>,
     pub parser_engine_dir: PathBuf,
+    pub parser_runtime_dir: PathBuf,
 }
 
 fn main() {
@@ -38,9 +39,13 @@ fn main() {
 
             // Store database in app state
             let parser_engine_dir = resolve_parser_engine_dir(app);
+            let parser_runtime_dir = app_data_dir.join("parser_runtime");
+            std::fs::create_dir_all(&parser_runtime_dir)
+                .expect("Failed to create parser runtime directory");
             app.manage(AppState {
                 db: Arc::new(db),
                 parser_engine_dir,
+                parser_runtime_dir,
             });
 
             Ok(())

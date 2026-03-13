@@ -64,6 +64,7 @@ func main() {
 	mainProductRepo := repository.NewMainProductRepository(database)
 	syncStateRepo := repository.NewSyncStateRepository(database)
 	parserRepo := repository.NewParserAppRepository(database)
+	invalidProductRepo := repository.NewInvalidProductRepository(database)
 
 	// New entity repositories
 	authorRepo := repository.NewEksmoAuthorRepository(database)
@@ -78,7 +79,7 @@ func main() {
 	categoryLinker := services.NewCategoryLinker(categoryRepo)
 	treeBuilder := services.NewEksmoTreeBuilder(nicheRepo, subjectRepo)
 	billzSyncService := services.NewBillzSyncService(cfg, mainProductRepo)
-	parserService := services.NewParserAppService(parserRepo, eksmoRepo, mainProductRepo)
+	parserService := services.NewParserAppService(parserRepo, eksmoRepo, mainProductRepo, invalidProductRepo)
 
 	// Handlers
 	categoryHandler := handlers.NewCategoryHandler(categoryRepo)
@@ -171,6 +172,9 @@ func main() {
 		}
 		if err := parserRepo.EnsureIndexes(indexCtx); err != nil {
 			log.Printf("warning: failed to ensure parser indexes: %v", err)
+		}
+		if err := invalidProductRepo.EnsureIndexes(indexCtx); err != nil {
+			log.Printf("warning: failed to ensure invalid product indexes: %v", err)
 		}
 	}()
 

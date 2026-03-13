@@ -53,6 +53,12 @@ type ParserLocalSyncRecord struct {
 	Data      map[string]any `json:"data"`
 }
 
+type ParserInvalidRecord struct {
+	SourceURL string
+	Payload   any
+	Error     string
+}
+
 type ParserLocalSyncRequest struct {
 	RunID       string                            `json:"runId"`
 	Records     []ParserLocalSyncRecord           `json:"records"`
@@ -61,6 +67,7 @@ type ParserLocalSyncRequest struct {
 	MappingName string                            `json:"mappingName"`
 	SyncEksmo   bool                              `json:"syncEksmo"`
 	SyncMain    bool                              `json:"syncMain"`
+	Invalid     []ParserInvalidRecord             `json:"-"`
 }
 
 type ParserRunExecution struct {
@@ -85,17 +92,19 @@ type parserURLParseResult struct {
 }
 
 type ParserAppService struct {
-	parserRepo *repository.ParserAppRepository
-	eksmoRepo  *repository.EksmoProductRepository
-	mainRepo   *repository.MainProductRepository
-	httpClient *http.Client
-	userAgent  string
+	parserRepo  *repository.ParserAppRepository
+	eksmoRepo   *repository.EksmoProductRepository
+	mainRepo    *repository.MainProductRepository
+	invalidRepo *repository.InvalidProductRepository
+	httpClient  *http.Client
+	userAgent   string
 }
 
 func NewParserAppService(
 	parserRepo *repository.ParserAppRepository,
 	eksmoRepo *repository.EksmoProductRepository,
 	mainRepo *repository.MainProductRepository,
+	invalidRepo *repository.InvalidProductRepository,
 ) *ParserAppService {
 	dialer := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
@@ -107,11 +116,12 @@ func NewParserAppService(
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
 	return &ParserAppService{
-		parserRepo: parserRepo,
-		eksmoRepo:  eksmoRepo,
-		mainRepo:   mainRepo,
-		httpClient: &http.Client{Transport: transport, Timeout: 20 * time.Second},
-		userAgent:  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+		parserRepo:  parserRepo,
+		eksmoRepo:   eksmoRepo,
+		mainRepo:    mainRepo,
+		invalidRepo: invalidRepo,
+		httpClient:  &http.Client{Transport: transport, Timeout: 20 * time.Second},
+		userAgent:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
 	}
 }
 
@@ -301,6 +311,7 @@ func (s *ParserAppService) SyncRun(
 
 	eksmoBatch := make([]models.EksmoProduct, 0, 300)
 	mainBatch := make([]models.MainProduct, 0, 300)
+	invalidProducts := make([]models.InvalidProduct, 0, 64)
 
 	flush := func() error {
 		if req.SyncEksmo && len(eksmoBatch) > 0 {
@@ -352,6 +363,25 @@ func (s *ParserAppService) SyncRun(
 			} else {
 				mainBatch = append(mainBatch, parsedMain)
 			}
+			if !hasEksmo && !hasMain {
+				invalidProducts = append(invalidProducts, newInvalidProduct(
+					runID,
+					record.SourceURL,
+					"parser-run-sync",
+					"record did not produce a valid eksmo or main product",
+					record.Data,
+				))
+				result.InvalidCount++
+			}
+		} else if !hasEksmo {
+			invalidProducts = append(invalidProducts, newInvalidProduct(
+				runID,
+				record.SourceURL,
+				"parser-run-sync",
+				"record did not produce a valid eksmo product",
+				record.Data,
+			))
+			result.InvalidCount++
 		}
 
 		if len(eksmoBatch) >= 250 || len(mainBatch) >= 250 {
@@ -367,6 +397,9 @@ func (s *ParserAppService) SyncRun(
 	if err := flush(); err != nil {
 		return result, err
 	}
+	if err := s.saveInvalidProducts(ctx, invalidProducts); err != nil {
+		return result, err
+	}
 
 	return result, nil
 }
@@ -377,7 +410,7 @@ func (s *ParserAppService) SyncLocalRecords(
 ) (models.ParserSyncResult, error) {
 	result := models.ParserSyncResult{}
 
-	if len(req.Records) == 0 {
+	if len(req.Records) == 0 && len(req.Invalid) == 0 {
 		return result, errors.New("at least one record is required")
 	}
 	if len(req.Rules) == 0 {
@@ -414,6 +447,18 @@ func (s *ParserAppService) SyncLocalRecords(
 
 	eksmoBatch := make([]models.EksmoProduct, 0, 300)
 	mainBatch := make([]models.MainProduct, 0, 300)
+	invalidProducts := make([]models.InvalidProduct, 0, len(req.Invalid)+64)
+	result.TotalRecords = len(req.Invalid)
+	for _, invalid := range req.Invalid {
+		invalidProducts = append(invalidProducts, newInvalidProduct(
+			runID,
+			invalid.SourceURL,
+			"parser-local-sync",
+			invalid.Error,
+			invalid.Payload,
+		))
+	}
+	result.InvalidCount = len(invalidProducts)
 
 	flush := func() error {
 		if req.SyncEksmo && len(eksmoBatch) > 0 {
@@ -469,6 +514,25 @@ func (s *ParserAppService) SyncLocalRecords(
 			} else {
 				mainBatch = append(mainBatch, parsedMain)
 			}
+			if !hasEksmo && !hasMain {
+				invalidProducts = append(invalidProducts, newInvalidProduct(
+					runID,
+					strings.TrimSpace(record.SourceURL),
+					"parser-local-sync",
+					"record did not produce a valid eksmo or main product",
+					source,
+				))
+				result.InvalidCount++
+			}
+		} else if !hasEksmo {
+			invalidProducts = append(invalidProducts, newInvalidProduct(
+				runID,
+				strings.TrimSpace(record.SourceURL),
+				"parser-local-sync",
+				"record did not produce a valid eksmo product",
+				source,
+			))
+			result.InvalidCount++
 		}
 
 		if len(eksmoBatch) >= 250 || len(mainBatch) >= 250 {
@@ -481,8 +545,18 @@ func (s *ParserAppService) SyncLocalRecords(
 	if err := flush(); err != nil {
 		return result, err
 	}
+	if err := s.saveInvalidProducts(ctx, invalidProducts); err != nil {
+		return result, err
+	}
 
 	return result, nil
+}
+
+func (s *ParserAppService) saveInvalidProducts(ctx context.Context, products []models.InvalidProduct) error {
+	if len(products) == 0 || s.invalidRepo == nil {
+		return nil
+	}
+	return s.invalidRepo.InsertMany(ctx, products)
 }
 
 func (s *ParserAppService) discoverCandidateURLs(
@@ -4413,6 +4487,54 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func newInvalidProduct(
+	runID primitive.ObjectID,
+	sourceURL string,
+	syncSource string,
+	reason string,
+	payload any,
+) models.InvalidProduct {
+	return models.InvalidProduct{
+		RunID:      runID,
+		SourceURL:  strings.TrimSpace(sourceURL),
+		SyncSource: strings.TrimSpace(syncSource),
+		Error:      strings.TrimSpace(reason),
+		Payload:    normalizeJSONLikeValue(payload),
+	}
+}
+
+func normalizeJSONLikeValue(value any) any {
+	switch typed := value.(type) {
+	case nil, string, bool, int, int8, int16, int32, int64, float32, float64:
+		return typed
+	case json.Number:
+		text := typed.String()
+		if !strings.ContainsAny(text, ".eE") {
+			if parsed, err := typed.Int64(); err == nil {
+				return parsed
+			}
+		}
+		if parsed, err := typed.Float64(); err == nil {
+			return parsed
+		}
+		return text
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = normalizeJSONLikeValue(item)
+		}
+		return result
+	case []any:
+		result := make([]any, 0, len(typed))
+		for _, item := range typed {
+			result = append(result, normalizeJSONLikeValue(item))
+		}
+		return result
+	default:
+		return fmt.Sprintf("%v", typed)
+	}
 }
 
 func firstNonEmptyAny(values ...any) any {

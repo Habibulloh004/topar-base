@@ -1,7 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -188,8 +192,8 @@ func (h *ParserAppHandler) SeedRun(c *fiber.Ctx) error {
 }
 
 func (h *ParserAppHandler) SyncLocalRecords(c *fiber.Ctx) error {
-	var req services.ParserLocalSyncRequest
-	if err := c.BodyParser(&req); err != nil {
+	req, err := parseLocalSyncRequest(c.Body())
+	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -240,4 +244,103 @@ func parseObjectIDParam(value string) (primitive.ObjectID, error) {
 		return primitive.NilObjectID, fiber.NewError(fiber.StatusBadRequest, "id is invalid")
 	}
 	return id, nil
+}
+
+type rawParserLocalSyncRequest struct {
+	RunID       any                               `json:"runId"`
+	Records     []json.RawMessage                 `json:"records"`
+	Rules       map[string]models.ParserFieldRule `json:"rules"`
+	SaveMapping bool                              `json:"saveMapping"`
+	MappingName string                            `json:"mappingName"`
+	SyncEksmo   bool                              `json:"syncEksmo"`
+	SyncMain    bool                              `json:"syncMain"`
+}
+
+func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error) {
+	req := services.ParserLocalSyncRequest{}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+
+	var raw rawParserLocalSyncRequest
+	if err := decoder.Decode(&raw); err != nil {
+		return req, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != nil && err != io.EOF {
+		return req, fiber.ErrBadRequest
+	}
+
+	req.RunID = stringifyJSONValue(raw.RunID)
+	req.Rules = raw.Rules
+	req.SaveMapping = raw.SaveMapping
+	req.MappingName = raw.MappingName
+	req.SyncEksmo = raw.SyncEksmo
+	req.SyncMain = raw.SyncMain
+	req.Records = make([]services.ParserLocalSyncRecord, 0, len(raw.Records))
+	req.Invalid = make([]services.ParserInvalidRecord, 0)
+
+	for _, recordBody := range raw.Records {
+		record, invalid := parseLocalSyncRecord(recordBody)
+		if invalid != nil {
+			req.Invalid = append(req.Invalid, *invalid)
+			continue
+		}
+		req.Records = append(req.Records, *record)
+	}
+
+	return req, nil
+}
+
+func parseLocalSyncRecord(recordBody json.RawMessage) (*services.ParserLocalSyncRecord, *services.ParserInvalidRecord) {
+	var payload any
+	if err := json.Unmarshal(recordBody, &payload); err != nil {
+		return nil, &services.ParserInvalidRecord{
+			Error:   fmt.Sprintf("record is not valid json: %v", err),
+			Payload: map[string]any{"raw": string(recordBody)},
+		}
+	}
+
+	recordMap, ok := payload.(map[string]any)
+	if !ok {
+		return nil, &services.ParserInvalidRecord{
+			Error:   "record must be an object",
+			Payload: payload,
+		}
+	}
+
+	dataValue, hasData := recordMap["data"]
+	if !hasData {
+		return nil, &services.ParserInvalidRecord{
+			SourceURL: stringifyJSONValue(recordMap["sourceUrl"]),
+			Error:     "record.data is required",
+			Payload:   recordMap,
+		}
+	}
+
+	dataMap, ok := dataValue.(map[string]any)
+	if !ok {
+		return nil, &services.ParserInvalidRecord{
+			SourceURL: stringifyJSONValue(recordMap["sourceUrl"]),
+			Error:     "record.data must be an object",
+			Payload:   recordMap,
+		}
+	}
+
+	return &services.ParserLocalSyncRecord{
+		SourceURL: stringifyJSONValue(recordMap["sourceUrl"]),
+		Data:      dataMap,
+	}, nil
+}
+
+func stringifyJSONValue(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return strings.TrimSpace(typed.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(typed))
+	}
 }

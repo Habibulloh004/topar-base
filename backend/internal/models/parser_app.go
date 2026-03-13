@@ -71,6 +71,7 @@ type ParserSyncResult struct {
 	MainInserted     int                `json:"mainInserted"`
 	MainModified     int                `json:"mainModified"`
 	MainSkipped      int                `json:"mainSkipped"`
+	InvalidCount     int                `json:"invalidCount"`
 	TotalRecords     int                `json:"totalRecords"`
 	MappingProfileID string             `json:"mappingProfileId,omitempty"`
 	MappingProfile   string             `json:"mappingProfile,omitempty"`

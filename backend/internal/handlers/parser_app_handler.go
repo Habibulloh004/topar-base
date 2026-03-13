@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -194,6 +194,7 @@ func (h *ParserAppHandler) SeedRun(c *fiber.Ctx) error {
 func (h *ParserAppHandler) SyncLocalRecords(c *fiber.Ctx) error {
 	req, err := parseLocalSyncRequest(c.Body())
 	if err != nil {
+		log.Printf("parser-app sync-local invalid request body: err=%v bytes=%d", err, len(c.Body()))
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -264,10 +265,6 @@ func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error)
 	var raw rawParserLocalSyncRequest
 	if err := decoder.Decode(&raw); err != nil {
 		return req, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != nil && err != io.EOF {
-		return req, fiber.ErrBadRequest
 	}
 
 	req.RunID = stringifyJSONValue(raw.RunID)

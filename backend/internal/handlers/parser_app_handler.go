@@ -247,36 +247,32 @@ func parseObjectIDParam(value string) (primitive.ObjectID, error) {
 	return id, nil
 }
 
-type rawParserLocalSyncRequest struct {
-	RunID       any                               `json:"runId"`
-	Records     []json.RawMessage                 `json:"records"`
-	Rules       map[string]models.ParserFieldRule `json:"rules"`
-	SaveMapping bool                              `json:"saveMapping"`
-	MappingName string                            `json:"mappingName"`
-	SyncEksmo   bool                              `json:"syncEksmo"`
-	SyncMain    bool                              `json:"syncMain"`
-}
-
 func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error) {
 	req := services.ParserLocalSyncRequest{}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 
-	var raw rawParserLocalSyncRequest
-	if err := decoder.Decode(&raw); err != nil {
+	var payload map[string]json.RawMessage
+	if err := decoder.Decode(&payload); err != nil {
 		return req, err
 	}
 
-	req.RunID = stringifyJSONValue(raw.RunID)
-	req.Rules = raw.Rules
-	req.SaveMapping = raw.SaveMapping
-	req.MappingName = raw.MappingName
-	req.SyncEksmo = raw.SyncEksmo
-	req.SyncMain = raw.SyncMain
-	req.Records = make([]services.ParserLocalSyncRecord, 0, len(raw.Records))
+	req.RunID = stringifyRawJSONValue(payload["runId"])
+	req.Rules = parseLocalSyncRules(payload["rules"])
+	req.SaveMapping = parseRawJSONBool(payload["saveMapping"])
+	req.MappingName = stringifyRawJSONValue(payload["mappingName"])
+	req.SyncEksmo = parseRawJSONBool(payload["syncEksmo"])
+	req.SyncMain = parseRawJSONBool(payload["syncMain"])
+
+	recordBodies, err := parseLocalSyncRecordBodies(payload["records"])
+	if err != nil {
+		return req, err
+	}
+
+	req.Records = make([]services.ParserLocalSyncRecord, 0, len(recordBodies))
 	req.Invalid = make([]services.ParserInvalidRecord, 0)
 
-	for _, recordBody := range raw.Records {
+	for _, recordBody := range recordBodies {
 		record, invalid := parseLocalSyncRecord(recordBody)
 		if invalid != nil {
 			req.Invalid = append(req.Invalid, *invalid)
@@ -286,6 +282,56 @@ func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error)
 	}
 
 	return req, nil
+}
+
+func parseLocalSyncRecordBodies(raw json.RawMessage) ([]json.RawMessage, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+
+	var records []json.RawMessage
+	if err := json.Unmarshal(raw, &records); err != nil {
+		return nil, fiber.ErrBadRequest
+	}
+	return records, nil
+}
+
+func parseLocalSyncRules(raw json.RawMessage) map[string]models.ParserFieldRule {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+
+	var rawRules map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawRules); err != nil {
+		return nil
+	}
+
+	rules := make(map[string]models.ParserFieldRule, len(rawRules))
+	for key, ruleBody := range rawRules {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+
+		var rulePayload map[string]json.RawMessage
+		if err := json.Unmarshal(ruleBody, &rulePayload); err != nil {
+			continue
+		}
+
+		rule := models.ParserFieldRule{
+			Source:   stringifyRawJSONValue(rulePayload["source"]),
+			Constant: stringifyRawJSONValue(rulePayload["constant"]),
+		}
+		if rule.Source == "" && rule.Constant == "" {
+			continue
+		}
+		rules[key] = rule
+	}
+
+	if len(rules) == 0 {
+		return nil
+	}
+	return rules
 }
 
 func parseLocalSyncRecord(recordBody json.RawMessage) (*services.ParserLocalSyncRecord, *services.ParserInvalidRecord) {
@@ -337,7 +383,46 @@ func stringifyJSONValue(value any) string {
 		return strings.TrimSpace(typed)
 	case json.Number:
 		return strings.TrimSpace(typed.String())
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case []any, map[string]any:
+		return ""
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func stringifyRawJSONValue(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return stringifyJSONValue(value)
+}
+
+func parseRawJSONBool(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		return strings.EqualFold(strings.TrimSpace(typed), "true")
+	default:
+		return false
 	}
 }

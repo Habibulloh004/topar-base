@@ -42,3 +42,42 @@ func TestParseLocalSyncRequestSeparatesInvalidRecords(t *testing.T) {
 		t.Fatalf("expected invalid records to keep parse errors")
 	}
 }
+
+func TestParseLocalSyncRequestIgnoresBrokenRulesButKeepsRecords(t *testing.T) {
+	body := []byte(`{
+		"runId": "run-456",
+		"rules": {
+			"eksmo.name": {"source": ["title"]},
+			"main.name": {"source": "title"},
+			"main.price": "broken"
+		},
+		"records": [
+			{
+				"sourceUrl": "https://example.com/valid",
+				"data": {"title": "Valid product"}
+			},
+			{
+				"sourceUrl": "https://example.com/invalid",
+				"data": 123
+			}
+		]
+	}`)
+
+	req, err := parseLocalSyncRequest(body)
+	if err != nil {
+		t.Fatalf("parseLocalSyncRequest returned error: %v", err)
+	}
+
+	if len(req.Rules) != 1 {
+		t.Fatalf("expected 1 usable rule, got %d", len(req.Rules))
+	}
+	if req.Rules["main.name"].Source != "title" {
+		t.Fatalf("unexpected parsed rule: %#v", req.Rules["main.name"])
+	}
+	if len(req.Records) != 1 {
+		t.Fatalf("expected 1 valid record, got %d", len(req.Records))
+	}
+	if len(req.Invalid) != 1 {
+		t.Fatalf("expected 1 invalid record, got %d", len(req.Invalid))
+	}
+}

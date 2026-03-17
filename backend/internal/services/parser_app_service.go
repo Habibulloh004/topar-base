@@ -413,14 +413,11 @@ func (s *ParserAppService) SyncLocalRecords(
 	if len(req.Records) == 0 && len(req.Invalid) == 0 {
 		return result, errors.New("at least one record is required")
 	}
-	if len(req.Rules) == 0 {
-		return result, errors.New("at least one mapping rule is required")
-	}
 
 	req.SyncEksmo = true
 	req.SyncMain = true
 
-	if req.SaveMapping || strings.TrimSpace(req.MappingName) != "" {
+	if len(req.Rules) > 0 && (req.SaveMapping || strings.TrimSpace(req.MappingName) != "") {
 		profile, err := s.parserRepo.SaveMappingProfile(ctx, strings.TrimSpace(req.MappingName), req.Rules)
 		if err != nil {
 			return result, err

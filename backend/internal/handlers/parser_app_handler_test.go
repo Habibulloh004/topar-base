@@ -81,3 +81,71 @@ func TestParseLocalSyncRequestIgnoresBrokenRulesButKeepsRecords(t *testing.T) {
 		t.Fatalf("expected 1 invalid record, got %d", len(req.Invalid))
 	}
 }
+
+func TestParseLocalSyncRequestRecoversMalformedRecordsArray(t *testing.T) {
+	body := []byte(`{
+		"runId": "run-789",
+		"records": [
+			{
+				"sourceUrl": "https://example.com/valid-1",
+				"data": {"title": "Valid one"}
+			},
+			{
+				"sourceUrl": "https://example.com/broken",
+				"data": {"title": "Broken" "price": 10}
+			},
+			{
+				"sourceUrl": "https://example.com/valid-2",
+				"data": {"title": "Valid two"}
+			}
+		],
+		"rules": {
+			"eksmo.name": {"source": "title"}
+		},
+		"saveMapping": false,
+		"mappingName": "",
+		"syncEksmo": true,
+		"syncMain": true
+	}`)
+
+	req, err := parseLocalSyncRequest(body)
+	if err != nil {
+		t.Fatalf("parseLocalSyncRequest returned error: %v", err)
+	}
+
+	if len(req.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(req.Rules))
+	}
+	if len(req.Records) != 2 {
+		t.Fatalf("expected 2 valid records, got %d", len(req.Records))
+	}
+	if len(req.Invalid) == 0 {
+		t.Fatalf("expected malformed record to be tracked as invalid")
+	}
+}
+
+func TestParseLocalSyncRequestRecoversTruncatedRecordsArray(t *testing.T) {
+	body := []byte(`{
+		"runId": "run-999",
+		"records": [
+			{
+				"sourceUrl": "https://example.com/valid",
+				"data": {"title": "Valid"}
+			},
+			{
+				"sourceUrl": "https://example.com/truncated",
+				"data": {"title": "Broken"}
+	`)
+
+	req, err := parseLocalSyncRequest(body)
+	if err != nil {
+		t.Fatalf("parseLocalSyncRequest returned error: %v", err)
+	}
+
+	if len(req.Records) != 1 {
+		t.Fatalf("expected 1 valid record, got %d", len(req.Records))
+	}
+	if len(req.Invalid) != 1 {
+		t.Fatalf("expected 1 invalid record from truncated tail, got %d", len(req.Invalid))
+	}
+}

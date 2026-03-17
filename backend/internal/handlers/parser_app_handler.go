@@ -203,6 +203,15 @@ func (h *ParserAppHandler) SyncLocalRecords(c *fiber.Ctx) error {
 
 	result, err := h.service.SyncLocalRecords(ctx, req)
 	if err != nil {
+		log.Printf(
+			"parser-app sync-local failed: err=%v runId=%q records=%d invalid=%d rules=%d bytes=%d",
+			err,
+			req.RunID,
+			len(req.Records),
+			len(req.Invalid),
+			len(req.Rules),
+			len(c.Body()),
+		)
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	invalidateProductCachesByRedis(h.redis)
@@ -254,9 +263,43 @@ func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error)
 
 	var payload map[string]json.RawMessage
 	if err := decoder.Decode(&payload); err != nil {
-		return req, err
+		recoveredReq, recoveredErr := parseLocalSyncRequestBestEffort(body)
+		if recoveredErr != nil {
+			return req, err
+		}
+		return recoveredReq, nil
 	}
 
+	return parseLocalSyncRequestFromPayload(payload)
+}
+
+func parseLocalSyncRequestBestEffort(body []byte) (services.ParserLocalSyncRequest, error) {
+	payload := map[string]json.RawMessage{}
+	keys := []string{
+		"runId",
+		"records",
+		"rules",
+		"saveMapping",
+		"mappingName",
+		"syncEksmo",
+		"syncMain",
+	}
+
+	for _, key := range keys {
+		raw := extractJSONFieldRaw(body, key)
+		if len(raw) == 0 {
+			continue
+		}
+		payload[key] = raw
+	}
+	if len(payload) == 0 {
+		return services.ParserLocalSyncRequest{}, fiber.ErrBadRequest
+	}
+	return parseLocalSyncRequestFromPayload(payload)
+}
+
+func parseLocalSyncRequestFromPayload(payload map[string]json.RawMessage) (services.ParserLocalSyncRequest, error) {
+	req := services.ParserLocalSyncRequest{}
 	req.RunID = stringifyRawJSONValue(payload["runId"])
 	req.Rules = parseLocalSyncRules(payload["rules"])
 	req.SaveMapping = parseRawJSONBool(payload["saveMapping"])
@@ -264,13 +307,14 @@ func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error)
 	req.SyncEksmo = parseRawJSONBool(payload["syncEksmo"])
 	req.SyncMain = parseRawJSONBool(payload["syncMain"])
 
-	recordBodies, err := parseLocalSyncRecordBodies(payload["records"])
+	recordBodies, invalidRecords, err := parseLocalSyncRecordBodies(payload["records"])
 	if err != nil {
 		return req, err
 	}
 
 	req.Records = make([]services.ParserLocalSyncRecord, 0, len(recordBodies))
-	req.Invalid = make([]services.ParserInvalidRecord, 0)
+	req.Invalid = make([]services.ParserInvalidRecord, 0, len(invalidRecords))
+	req.Invalid = append(req.Invalid, invalidRecords...)
 
 	for _, recordBody := range recordBodies {
 		record, invalid := parseLocalSyncRecord(recordBody)
@@ -284,16 +328,30 @@ func parseLocalSyncRequest(body []byte) (services.ParserLocalSyncRequest, error)
 	return req, nil
 }
 
-func parseLocalSyncRecordBodies(raw json.RawMessage) ([]json.RawMessage, error) {
+func parseLocalSyncRecordBodies(raw json.RawMessage) ([]json.RawMessage, []services.ParserInvalidRecord, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	var records []json.RawMessage
 	if err := json.Unmarshal(raw, &records); err != nil {
-		return nil, fiber.ErrBadRequest
+		recoveredRecords, brokenSegments, recoverErr := recoverLocalSyncRecordBodies(raw)
+		if recoverErr != nil {
+			return nil, nil, fiber.ErrBadRequest
+		}
+		invalid := make([]services.ParserInvalidRecord, 0, len(brokenSegments))
+		for _, segment := range brokenSegments {
+			invalid = append(invalid, services.ParserInvalidRecord{
+				Error:   "record is not valid json: malformed segment in records array",
+				Payload: map[string]any{"raw": string(segment)},
+			})
+		}
+		if len(recoveredRecords) == 0 && len(invalid) == 0 {
+			return nil, nil, fiber.ErrBadRequest
+		}
+		return recoveredRecords, invalid, nil
 	}
-	return records, nil
+	return records, nil, nil
 }
 
 func parseLocalSyncRules(raw json.RawMessage) map[string]models.ParserFieldRule {
@@ -425,4 +483,246 @@ func parseRawJSONBool(raw json.RawMessage) bool {
 	default:
 		return false
 	}
+}
+
+func extractJSONFieldRaw(body []byte, field string) json.RawMessage {
+	needle := []byte(`"` + field + `"`)
+	searchFrom := 0
+	for searchFrom < len(body) {
+		index := bytes.Index(body[searchFrom:], needle)
+		if index < 0 {
+			return nil
+		}
+		index += searchFrom
+
+		colon := skipJSONWhitespace(body, index+len(needle))
+		if colon >= len(body) || body[colon] != ':' {
+			searchFrom = index + len(needle)
+			continue
+		}
+
+		valueStart := skipJSONWhitespace(body, colon+1)
+		valueEnd, _, ok := scanJSONValueEnd(body, valueStart)
+		if !ok || valueEnd <= valueStart {
+			searchFrom = index + len(needle)
+			continue
+		}
+
+		return cloneRawJSON(bytes.TrimSpace(body[valueStart:valueEnd]))
+	}
+	return nil
+}
+
+func recoverLocalSyncRecordBodies(raw json.RawMessage) ([]json.RawMessage, []json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil, nil
+	}
+	if trimmed[0] != '[' {
+		return nil, nil, fiber.ErrBadRequest
+	}
+
+	records := make([]json.RawMessage, 0)
+	broken := make([]json.RawMessage, 0)
+
+	inString := false
+	escapeNext := false
+	objectDepth := 0
+	elementStart := -1
+
+	for i := 1; i < len(trimmed); i++ {
+		ch := trimmed[i]
+
+		if inString {
+			if escapeNext {
+				escapeNext = false
+				continue
+			}
+			if ch == '\\' {
+				escapeNext = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			if elementStart == -1 {
+				elementStart = i
+			}
+			continue
+		}
+
+		if objectDepth > 0 {
+			if ch == '{' {
+				objectDepth++
+				continue
+			}
+			if ch == '}' {
+				objectDepth--
+				if objectDepth == 0 && elementStart >= 0 {
+					candidate := bytes.TrimSpace(trimmed[elementStart : i+1])
+					if len(candidate) > 0 {
+						records = append(records, cloneRawJSON(candidate))
+					}
+					elementStart = -1
+				}
+			}
+			continue
+		}
+
+		switch ch {
+		case '{':
+			if elementStart >= 0 {
+				segment := bytes.TrimSpace(trimmed[elementStart:i])
+				if len(segment) > 0 {
+					broken = append(broken, cloneRawJSON(segment))
+				}
+			}
+			elementStart = i
+			objectDepth = 1
+		case ',':
+			if elementStart >= 0 {
+				segment := bytes.TrimSpace(trimmed[elementStart:i])
+				if len(segment) > 0 {
+					broken = append(broken, cloneRawJSON(segment))
+				}
+				elementStart = -1
+			}
+		case ']':
+			if elementStart >= 0 {
+				segment := bytes.TrimSpace(trimmed[elementStart:i])
+				if len(segment) > 0 {
+					broken = append(broken, cloneRawJSON(segment))
+				}
+			}
+			return records, broken, nil
+		default:
+			if isJSONWhitespace(ch) {
+				continue
+			}
+			if elementStart == -1 {
+				elementStart = i
+			}
+		}
+	}
+
+	if elementStart >= 0 {
+		segment := bytes.TrimSpace(trimmed[elementStart:])
+		if len(segment) > 0 {
+			broken = append(broken, cloneRawJSON(segment))
+		}
+	}
+
+	return records, broken, nil
+}
+
+func skipJSONWhitespace(data []byte, index int) int {
+	for index < len(data) && isJSONWhitespace(data[index]) {
+		index++
+	}
+	return index
+}
+
+func scanJSONValueEnd(data []byte, start int) (int, byte, bool) {
+	if start >= len(data) {
+		return start, 0, false
+	}
+
+	inString := false
+	escapeNext := false
+	objectDepth := 0
+	arrayDepth := 0
+	valueStarted := false
+
+	for i := start; i < len(data); i++ {
+		ch := data[i]
+
+		if inString {
+			if escapeNext {
+				escapeNext = false
+				continue
+			}
+			if ch == '\\' {
+				escapeNext = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			valueStarted = true
+			continue
+		}
+		if isJSONWhitespace(ch) {
+			continue
+		}
+
+		switch ch {
+		case '{':
+			objectDepth++
+			valueStarted = true
+		case '[':
+			arrayDepth++
+			valueStarted = true
+		case '}':
+			if objectDepth == 0 && arrayDepth == 0 && valueStarted {
+				return i, ch, true
+			}
+			if objectDepth > 0 {
+				objectDepth--
+			}
+			valueStarted = true
+		case ']':
+			if arrayDepth == 0 && objectDepth == 0 && valueStarted {
+				return i, ch, true
+			}
+			if arrayDepth > 0 {
+				arrayDepth--
+			}
+			valueStarted = true
+		case ',':
+			if objectDepth == 0 && arrayDepth == 0 && valueStarted {
+				return i, ch, true
+			}
+			valueStarted = true
+		default:
+			valueStarted = true
+		}
+
+		if valueStarted && objectDepth == 0 && arrayDepth == 0 {
+			next := skipJSONWhitespace(data, i+1)
+			if next >= len(data) {
+				return i + 1, 0, true
+			}
+			if data[next] == ',' || data[next] == '}' || data[next] == ']' {
+				return i + 1, data[next], true
+			}
+		}
+	}
+
+	if valueStarted {
+		return len(data), 0, true
+	}
+	return start, 0, false
+}
+
+func isJSONWhitespace(ch byte) bool {
+	return ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t'
+}
+
+func cloneRawJSON(raw []byte) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	copied := make([]byte, len(raw))
+	copy(copied, raw)
+	return copied
 }

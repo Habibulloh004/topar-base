@@ -17,13 +17,20 @@ function resolveApiBaseUrl() {
 const API_BASE_URL = resolveApiBaseUrl()
 const DEFAULT_PRODUCTS_LIMIT = 20
 const MAX_PRODUCTS_LIMIT = 100
-const PAGE_SIZE_OPTIONS = [5, 10, 20, 30, 40, 50]
+const MAX_PAGE_SIZE = 200
+const PAGE_SIZE_OPTIONS = [5, 10, 20, 30, 40, 50, 100, 200]
+const CARD_COLUMNS_OPTIONS = [2, 3, 4, 5, 6]
+const EMPTY_SELECTED_KEYS = Object.freeze([])
 const ACTIVE_PAGE_STORAGE_KEY = 'topar_dashboard_active_page'
+const MAIN_PRODUCTS_LIMIT_STORAGE_KEY = 'topar_dashboard_main_products_limit'
+const MAIN_PRODUCTS_VIEW_MODE_STORAGE_KEY = 'topar_dashboard_main_products_view_mode'
+const MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY = 'topar_dashboard_main_products_card_columns'
 const SEARCH_DEBOUNCE_MS = 300
 const META_CACHE_STORAGE_KEY = 'topar_dashboard_meta_cache_v1'
 const META_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const AGE_FILTER_OPTIONS = ['0+', '6+', '12+', '16+', '18+']
-const ALLOWED_ACTIVE_PAGES = ['eksmo', 'mainProducts', 'duplicates']
+const ALLOWED_ACTIVE_PAGES = ['mainProducts', 'duplicates']
+const MAIN_PRODUCTS_OTHER_NODE_KEY = 'other'
 
 const EMPTY_META = {
   subjects: [],
@@ -74,20 +81,57 @@ function writeMetaCache(data) {
   } catch (_) {}
 }
 
+function readStoredMainProductsLimit() {
+  if (typeof window === 'undefined') return DEFAULT_PRODUCTS_LIMIT
+  const raw = String(window.localStorage.getItem(MAIN_PRODUCTS_LIMIT_STORAGE_KEY) || '').trim()
+  if (!raw) return DEFAULT_PRODUCTS_LIMIT
+  return clampQuantity(raw)
+}
+
+function readStoredMainProductsViewMode() {
+  if (typeof window === 'undefined') return 'list'
+  const raw = String(window.localStorage.getItem(MAIN_PRODUCTS_VIEW_MODE_STORAGE_KEY) || '').trim()
+  return raw === 'cards' || raw === 'list' ? raw : 'list'
+}
+
+function readStoredMainProductsCardColumns() {
+  if (typeof window === 'undefined') return 4
+  const raw = String(window.localStorage.getItem(MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY) || '').trim()
+  if (!raw) return 4
+  return clampCardColumns(raw)
+}
+
+function writeDashboardSetting(key, value) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(key, String(value))
+  } catch (_) {}
+}
+
 const EMPTY_MAIN_PRODUCT_FORM = {
   name: '',
   isbn: '',
   authorCover: '',
   authorNames: '',
+  authorRefsJson: '',
+  tagRefsJson: '',
+  genreRefsJson: '',
+  tagNames: '',
+  genreNames: '',
   annotation: '',
   coverUrl: '',
   coverUrls: [],
+  pages: '',
+  format: '',
+  paperType: '',
+  bindingType: '',
   ageRestriction: '',
   subjectName: '',
   nicheName: '',
   brandName: '',
   seriesName: '',
   publisherName: '',
+  categoryPath: '',
   quantity: '',
   price: '',
   categoryId: '',
@@ -271,7 +315,15 @@ function buildDuplicateGroups(products) {
 function clampQuantity(value) {
   const parsed = Number.parseInt(String(value), 10)
   if (!Number.isFinite(parsed) || parsed < 1) return 1
-  if (parsed > MAX_PRODUCTS_LIMIT) return MAX_PRODUCTS_LIMIT
+  if (parsed > MAX_PAGE_SIZE) return MAX_PAGE_SIZE
+  return parsed
+}
+
+function clampCardColumns(value) {
+  const parsed = Number.parseInt(String(value), 10)
+  if (!Number.isFinite(parsed)) return 4
+  if (parsed < 2) return 2
+  if (parsed > 6) return 6
   return parsed
 }
 
@@ -330,6 +382,39 @@ function flattenMainCategoryOptions(nodes, path = []) {
     result.push({ id: node.id, path: currentPath, label: currentPath.join(' / ') })
     if (Array.isArray(node.children) && node.children.length > 0) {
       result.push(...flattenMainCategoryOptions(node.children, currentPath))
+    }
+  }
+  return result
+}
+
+function flattenTreeNodeIds(nodes) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return []
+  const result = []
+  const walk = (items) => {
+    for (const item of items) {
+      const id = String(item?.id || '').trim()
+      if (id) result.push(id)
+      if (Array.isArray(item?.children) && item.children.length > 0) walk(item.children)
+    }
+  }
+  walk(nodes)
+  return result
+}
+
+function filterTreeNodesByQuery(nodes, normalizedQuery) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return []
+  if (!normalizedQuery) return nodes
+
+  const result = []
+  for (const node of nodes) {
+    const nodeName = String(node?.name || '').toLowerCase()
+    const children = Array.isArray(node?.children) ? node.children : []
+    const filteredChildren = filterTreeNodesByQuery(children, normalizedQuery)
+    if (nodeName.includes(normalizedQuery) || filteredChildren.length > 0) {
+      result.push({
+        ...node,
+        children: filteredChildren
+      })
     }
   }
   return result
@@ -401,10 +486,100 @@ function parseOptionalNumber(value) {
   return parsed
 }
 
+function parseOptionalInteger(value) {
+  const parsed = Number.parseInt(String(value).trim(), 10)
+  if (!Number.isFinite(parsed) || parsed < 0) return 0
+  return parsed
+}
+
 function formatOptionalNumberForInput(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed === 0) return ''
   return String(parsed)
+}
+
+function splitPathValue(value) {
+  const text = String(value || '').trim()
+  if (!text) return []
+  if (text.includes(' / ')) {
+    return text
+      .split(' / ')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  }
+  return text
+    .replace(/\|/g, ',')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function formatRefsJsonInput(value) {
+  if (!Array.isArray(value) || value.length === 0) return ''
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch (_) {
+    return ''
+  }
+}
+
+function parseRefsJsonInput(value, fieldLabel) {
+  const text = String(value || '').trim()
+  if (!text) return []
+
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (_) {
+    throw new Error(`Поле «${fieldLabel} (JSON)» содержит неверный JSON.`)
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Поле «${fieldLabel} (JSON)» должно быть JSON-массивом.`)
+  }
+
+  return parsed
+}
+
+function sanitizeAuthorRefs(values) {
+  if (!Array.isArray(values) || values.length === 0) return []
+  return values
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const guid = String(item.guid || '').trim()
+      const code = String(item.code || '').trim()
+      const name = String(item.name || '').trim()
+      if (!guid && !code && !name) return null
+      return {
+        guid,
+        code,
+        name,
+        isWriter: Boolean(item.isWriter),
+        isTranslator: Boolean(item.isTranslator),
+        isArtist: Boolean(item.isArtist)
+      }
+    })
+    .filter(Boolean)
+}
+
+function sanitizeTagGenreRefs(values) {
+  if (!Array.isArray(values) || values.length === 0) return []
+  return values
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null
+      const guid = String(item.guid || '').trim()
+      const name = String(item.name || '').trim()
+      if (!guid && !name) return null
+      return { guid, name }
+    })
+    .filter(Boolean)
+}
+
+function extractRefNames(values) {
+  if (!Array.isArray(values) || values.length === 0) return []
+  return values
+    .map((item) => String(item?.name || '').trim())
+    .filter(Boolean)
 }
 
 function normalizeCoverUrls(values) {
@@ -455,10 +630,10 @@ function resolveImageUrl(value) {
 
 function App() {
   const [activePage, setActivePage] = useState(() => {
-    if (typeof window === 'undefined') return 'eksmo'
+    if (typeof window === 'undefined') return 'mainProducts'
     const stored = String(window.localStorage.getItem(ACTIVE_PAGE_STORAGE_KEY) || '').trim()
-    return ALLOWED_ACTIVE_PAGES.includes(stored) ? stored : 'eksmo'
-  }) // eksmo | mainProducts | duplicates
+    return ALLOWED_ACTIVE_PAGES.includes(stored) ? stored : 'mainProducts'
+  }) // mainProducts | duplicates
 
   const [mainCategories, setMainCategories] = useState([])
   const [mainCategoriesLoading, setMainCategoriesLoading] = useState(true)
@@ -466,7 +641,7 @@ function App() {
   const [mainProductsExpanded, setMainProductsExpanded] = useState({})
 
   const [selectedMainCategory, setSelectedMainCategory] = useState(null) // for copy target
-  const [selectedMainProductsCategories, setSelectedMainProductsCategories] = useState([]) // for main products filtering
+  const [selectedMainProductsCategories, setSelectedMainProductsCategories] = useState([]) // for category linking from sidebar
 
   const [eksmoTree, setEksmoTree] = useState([])
   const [eksmoTreeLoading, setEksmoTreeLoading] = useState(true)
@@ -516,16 +691,22 @@ function App() {
   const [mainProductsLoading, setMainProductsLoading] = useState(true)
   const [mainProductsError, setMainProductsError] = useState('')
   const [mainProductsPage, setMainProductsPage] = useState(1)
-  const [mainProductsLimit, setMainProductsLimit] = useState(DEFAULT_PRODUCTS_LIMIT)
+  const [mainProductsLimit, setMainProductsLimit] = useState(() => readStoredMainProductsLimit())
   const [mainProductsTotalPages, setMainProductsTotalPages] = useState(0)
   const [mainProductsTotalItems, setMainProductsTotalItems] = useState(0)
+  const [mainProductsViewMode, setMainProductsViewMode] = useState(() => readStoredMainProductsViewMode())
+  const [mainProductsCardColumns, setMainProductsCardColumns] = useState(() => readStoredMainProductsCardColumns())
   const [mainProductsSearchInput, setMainProductsSearchInput] = useState('')
   const normalizedMainProductsSearchInput = useMemo(() => normalizeSearchQuery(mainProductsSearchInput), [mainProductsSearchInput])
   const mainProductsSearch = useDebounce(normalizedMainProductsSearchInput, SEARCH_DEBOUNCE_MS)
+  const [mainProductsCategoryFilter, setMainProductsCategoryFilter] = useState([])
+  const [mainProductsSourceCategories, setMainProductsSourceCategories] = useState([])
+  const [mainProductsSourceCategoriesLoading, setMainProductsSourceCategoriesLoading] = useState(false)
   const [mainProductsVersion, setMainProductsVersion] = useState(0)
   const [mainProductsStatus, setMainProductsStatus] = useState('')
   const [mainProductsActionKey, setMainProductsActionKey] = useState('')
   const [selectedMainProductIds, setSelectedMainProductIds] = useState([])
+  const [selectAllFilteredMainProducts, setSelectAllFilteredMainProducts] = useState(false)
   const [mainProductsBillzSyncing, setMainProductsBillzSyncing] = useState(false)
   const [mainProductsImporting, setMainProductsImporting] = useState(false)
   const [mainProductModalOpen, setMainProductModalOpen] = useState(false)
@@ -568,6 +749,31 @@ function App() {
   const filteredEksmoTree = useMemo(
     () => filterEksmoTreeNodes(eksmoTree, normalizedCategorySearchQuery),
     [eksmoTree, normalizedCategorySearchQuery]
+  )
+  const mainCategoryOptions = useMemo(() => flattenMainCategoryOptions(mainCategories), [mainCategories])
+  const mainProductsSourceCategoryIdSet = useMemo(
+    () => new Set(flattenTreeNodeIds(mainProductsSourceCategories)),
+    [mainProductsSourceCategories]
+  )
+  const selectedMainProductsSourceCategoryKeys = useMemo(() => {
+    if (!Array.isArray(mainProductsCategoryFilter) || mainProductsCategoryFilter.length === 0) return EMPTY_SELECTED_KEYS
+    const keys = []
+    const seen = new Set()
+    for (const selectedValue of mainProductsCategoryFilter) {
+      if (!mainProductsSourceCategoryIdSet.has(selectedValue) || seen.has(selectedValue)) continue
+      seen.add(selectedValue)
+      keys.push(selectedValue)
+    }
+    if (keys.length === 0) return EMPTY_SELECTED_KEYS
+    return keys
+  }, [mainProductsCategoryFilter, mainProductsSourceCategoryIdSet])
+  const selectedMainProductsSourceCategoryKeysParam = useMemo(
+    () => selectedMainProductsSourceCategoryKeys.join(','),
+    [selectedMainProductsSourceCategoryKeys]
+  )
+  const includeMainProductsWithoutCategory = useMemo(
+    () => selectedMainProductsSourceCategoryKeys.some((value) => value === MAIN_PRODUCTS_OTHER_NODE_KEY),
+    [selectedMainProductsSourceCategoryKeys]
   )
   const duplicateGroups = useMemo(() => buildDuplicateGroups(duplicateProducts), [duplicateProducts])
   const duplicateGroupsProductCount = useMemo(() => {
@@ -643,6 +849,18 @@ function App() {
   }, [activePage])
 
   useEffect(() => {
+    writeDashboardSetting(MAIN_PRODUCTS_LIMIT_STORAGE_KEY, clampQuantity(mainProductsLimit))
+  }, [mainProductsLimit])
+
+  useEffect(() => {
+    writeDashboardSetting(MAIN_PRODUCTS_VIEW_MODE_STORAGE_KEY, mainProductsViewMode === 'cards' ? 'cards' : 'list')
+  }, [mainProductsViewMode])
+
+  useEffect(() => {
+    writeDashboardSetting(MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY, clampCardColumns(mainProductsCardColumns))
+  }, [mainProductsCardColumns])
+
+  useEffect(() => {
     if (!toast) return
     const timer = setTimeout(() => setToast(null), 3000)
     return () => clearTimeout(timer)
@@ -716,7 +934,12 @@ function App() {
       if (isEditableElement(event.target)) return
 
       event.preventDefault()
-      const input = activePage === 'mainProducts' ? mainProductsSearchInputRef.current : productsSearchInputRef.current
+      const input =
+        activePage === 'mainProducts'
+          ? mainProductsSearchInputRef.current
+          : activePage === 'eksmo'
+            ? productsSearchInputRef.current
+            : null
       if (!input) return
       input.focus()
       input.select()
@@ -792,6 +1015,40 @@ function App() {
     }
     loadMainCategories()
   }, [])
+
+  useEffect(() => {
+    if (activePage !== 'mainProducts') return
+    const controller = new AbortController()
+
+    const loadMainProductsSourceCategories = async () => {
+      try {
+        setMainProductsSourceCategoriesLoading(true)
+        const response = await fetch(`${API_BASE_URL}/mainProducts/source-categories`, { signal: controller.signal })
+        if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
+        const payload = await response.json()
+        if (controller.signal.aborted) return
+        setMainProductsSourceCategories(Array.isArray(payload.data) ? payload.data : [])
+      } catch (err) {
+        if (err?.name === 'AbortError') return
+        setMainProductsSourceCategories([])
+        console.error('Failed to load main products source categories:', err)
+      } finally {
+        if (controller.signal.aborted) return
+        setMainProductsSourceCategoriesLoading(false)
+      }
+    }
+
+    loadMainProductsSourceCategories()
+    return () => controller.abort()
+  }, [activePage, mainProductsVersion])
+
+  useEffect(() => {
+    setMainProductsCategoryFilter((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return prev
+      const filtered = prev.filter((value) => mainProductsSourceCategoryIdSet.has(value))
+      return filtered.length === prev.length ? prev : filtered
+    })
+  }, [mainProductsSourceCategoryIdSet])
 
   useEffect(() => {
     const loadEksmoTree = async () => {
@@ -905,7 +1162,10 @@ function App() {
           limit: String(mainProductsLimit)
         })
         if (mainProductsSearch.trim()) params.set('search', mainProductsSearch.trim())
-        if (selectedMainProductsCategories.length > 0) params.set('categoryIds', selectedMainProductsCategories.map((cat) => cat.id).join(','))
+        if (selectedMainProductsSourceCategoryKeysParam) {
+          params.set('sourceCategoryKeys', selectedMainProductsSourceCategoryKeysParam)
+        }
+        if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
 
         const response = await fetch(`${API_BASE_URL}/mainProducts?${params.toString()}`, { signal: controller.signal })
         if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
@@ -925,11 +1185,11 @@ function App() {
 
     loadMainProducts()
     return () => controller.abort()
-  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsCategories, mainProductsVersion])
+  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsVersion])
 
   useEffect(() => {
     setMainProductsPage(1)
-  }, [mainProductsSearch, selectedMainProductsCategories, mainProductsLimit])
+  }, [mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsLimit])
 
   useEffect(() => {
     if (activePage !== 'duplicates') return
@@ -996,10 +1256,17 @@ function App() {
   }, [mainProductsTotalItems, mainProductsPage, mainProductsLimit])
   const selectPageMainProductsCount = Math.max(visibleMainProductIds.length, expectedMainProductsOnPage)
   const allVisibleMainProductsSelected = visibleMainProductIds.length > 0 && selectedVisibleMainProductsCount === visibleMainProductIds.length
+  const selectedMainProductsCount = selectAllFilteredMainProducts ? mainProductsTotalItems : selectedMainProductIds.length
 
   useEffect(() => {
     setSelectedMainProductIds((prev) => prev.filter((id) => visibleMainProductIdSet.has(id)))
   }, [visibleMainProductIdSet])
+
+  useEffect(() => {
+    if (mainProductsTotalItems > 0) return
+    if (!selectAllFilteredMainProducts) return
+    setSelectAllFilteredMainProducts(false)
+  }, [mainProductsTotalItems, selectAllFilteredMainProducts])
 
   const toggleEksmoNode = (guid) => setEksmoExpanded((prev) => ({ ...prev, [guid]: !prev[guid] }))
   const toggleMainCategoryNode = (id) => setMainCategoriesExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
@@ -1015,8 +1282,8 @@ function App() {
   const toggleMainProductsCategorySelection = (node, path) => {
     setSelectedMainProductsCategories((prev) => {
       const exists = prev.some((item) => item.id === node.id)
-      if (exists) return prev.filter((item) => item.id !== node.id)
-      return [...prev, { id: node.id, name: node.name, path }]
+      if (exists) return []
+      return [{ id: node.id, name: node.name, path }]
     })
   }
 
@@ -1059,6 +1326,7 @@ function App() {
   }
 
   const toggleMainProductSelection = (productID) => {
+    if (selectAllFilteredMainProducts) return
     if (!isMongoObjectId(productID)) return
     setSelectedMainProductIds((prev) => {
       if (prev.includes(productID)) return prev.filter((id) => id !== productID)
@@ -1067,6 +1335,7 @@ function App() {
   }
 
   const toggleSelectAllVisibleMainProducts = () => {
+    if (selectAllFilteredMainProducts) return
     if (visibleMainProductIds.length === 0) return
     setSelectedMainProductIds((prev) => {
       if (allVisibleMainProductsSelected) {
@@ -1077,6 +1346,14 @@ function App() {
       visibleMainProductIds.forEach((id) => merged.add(id))
       return [...merged]
     })
+  }
+
+  const toggleSelectAllFilteredMainProducts = () => {
+    if (mainProductsActionKey !== '') return
+    if (mainProductsTotalItems <= 0) return
+    const next = !selectAllFilteredMainProducts
+    setSelectAllFilteredMainProducts(next)
+    if (next) setSelectedMainProductIds([])
   }
 
   const clearFilters = () => {
@@ -1093,9 +1370,10 @@ function App() {
 
   const clearMainProductsFilters = () => {
     setMainProductsSearchInput('')
-    setSelectedMainProductsCategories([])
+    setMainProductsCategoryFilter([])
     setMainProductsLimit(DEFAULT_PRODUCTS_LIMIT)
     setSelectedMainProductIds([])
+    setSelectAllFilteredMainProducts(false)
   }
 
   const handleProductsLimitChange = (value) => setProductsLimit(clampQuantity(value))
@@ -1196,6 +1474,36 @@ function App() {
       if (!response.ok) throw new Error(payload.error || `Копирование не удалось (статус ${response.status})`)
       setCopyStatus(`Скопировано группой: ${payload.copied} (обработано: ${payload.processed}, пропущено: ${payload.skipped})`)
       setMainProductsVersion((prev) => prev + 1)
+    } catch (err) {
+      setCopyStatus(err.message || 'Копирование не удалось')
+    } finally {
+      setCopying(false)
+    }
+  }
+
+  const handleCopyMissingToMain = async () => {
+    try {
+      setCopying(true)
+      setCopyStatus('Перенос отсутствующих товаров в Main...')
+      const response = await fetch(`${API_BASE_URL}/copyEksmoProductsToMain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...buildCopyPayload(false),
+          categoryId: '',
+          page: 1,
+          quantity: MAX_PRODUCTS_LIMIT,
+          onlyMissing: true,
+          allPages: true
+        })
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || `Копирование не удалось (статус ${response.status})`)
+      setCopyStatus(
+        `Перенесено отсутствующих: ${payload.copied} (проверено: ${payload.scanned || 0}, обработано: ${payload.processed || 0}, пропущено: ${payload.skipped || 0})`
+      )
+      setMainProductsVersion((prev) => prev + 1)
+      setSyncVersion((prev) => prev + 1)
     } catch (err) {
       setCopyStatus(err.message || 'Копирование не удалось')
     } finally {
@@ -1438,6 +1746,9 @@ function App() {
   }
 
   const handleDeleteSelectedMainProducts = async () => {
+    if (selectAllFilteredMainProducts) {
+      return setMainProductsStatus('Снимите «Выбрать все по фильтру», чтобы удалять товары вручную.')
+    }
     const productIDs = selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
     if (productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
     const confirmed = window.confirm(
@@ -1478,6 +1789,125 @@ function App() {
     }
   }
 
+  const handleLinkSelectedMainProductsToCategory = async () => {
+    const selectedCategory = selectedMainProductsCategories.length === 1 ? selectedMainProductsCategories[0] : null
+    if (!selectedCategory?.id) return setMainProductsStatus('Слева выберите одну категорию для привязки.')
+
+    const bindAllFiltered = selectAllFilteredMainProducts
+    const productIDs = bindAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
+    if (!bindAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
+    if (bindAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+
+    const categoryName = selectedCategory.path?.join(' / ') || selectedCategory.name
+    const confirmed = window.confirm(
+      bindAllFiltered
+        ? `Привязать все отфильтрованные товары (${mainProductsTotalItems.toLocaleString()}) к категории «${categoryName}»?\n\nИзменение заменит текущую категорию у всех найденных товаров.`
+        : `Привязать ${productIDs.length} товар(ов) к категории «${categoryName}»?\n\nИзменение заменит текущую категорию у выбранных товаров.`
+    )
+    if (!confirmed) return
+
+    try {
+      setMainProductsActionKey('bulk-link-category')
+      setMainProductsStatus(
+        bindAllFiltered
+          ? `Привязка всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()}) к категории...`
+          : `Привязка ${productIDs.length} выбранных товаров к категории...`
+      )
+
+      const response = await fetch(`${API_BASE_URL}/mainProducts/link-category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productIds: productIDs,
+          categoryId: selectedCategory.id,
+          applyToFiltered: bindAllFiltered,
+          search: mainProductsSearch.trim(),
+          sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
+          withoutCategory: includeMainProductsWithoutCategory
+        })
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
+
+      const linked = Number(payload.linked || 0)
+      const notFound = Number(payload.notFound || 0)
+      const invalid = Number(payload.invalid || 0)
+
+      if (linked > 0) {
+        setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
+        if (bindAllFiltered) setSelectAllFilteredMainProducts(false)
+        setMainProductsVersion((prev) => prev + 1)
+      }
+
+      if (!bindAllFiltered && (notFound > 0 || invalid > 0)) {
+        setMainProductsStatus(`Привязано: ${linked}, не найдено: ${notFound}, некорректно: ${invalid}.`)
+      } else {
+        setMainProductsStatus(`Привязано к категории: ${linked}.`)
+      }
+    } catch (err) {
+      setMainProductsStatus(err.message || 'Не удалось привязать выбранные товары к категории')
+    } finally {
+      setMainProductsActionKey('')
+    }
+  }
+
+  const handleUnlinkSelectedMainProductsCategory = async () => {
+    const unlinkAllFiltered = selectAllFilteredMainProducts
+    const productIDs = unlinkAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
+    if (!unlinkAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
+    if (unlinkAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+
+    const confirmed = window.confirm(
+      unlinkAllFiltered
+        ? `Отвязать категорию у всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})?\n\nУ товаров будет удалена текущая категория.`
+        : `Отвязать категорию у ${productIDs.length} выбранных товар(ов)?\n\nУ товаров будет удалена текущая категория.`
+    )
+    if (!confirmed) return
+
+    try {
+      setMainProductsActionKey('bulk-unlink-category')
+      setMainProductsStatus(
+        unlinkAllFiltered
+          ? `Отвязка категории у всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})...`
+          : `Отвязка категории у ${productIDs.length} выбранных товаров...`
+      )
+
+      const response = await fetch(`${API_BASE_URL}/mainProducts/unlink-category`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          productIds: productIDs,
+          applyToFiltered: unlinkAllFiltered,
+          search: mainProductsSearch.trim(),
+          sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
+          withoutCategory: includeMainProductsWithoutCategory
+        })
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
+
+      const unlinked = Number(payload.unlinked || 0)
+      const notFound = Number(payload.notFound || 0)
+      const invalid = Number(payload.invalid || 0)
+
+      if (unlinked > 0) {
+        setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
+        if (unlinkAllFiltered) setSelectAllFilteredMainProducts(false)
+        setMainProductsVersion((prev) => prev + 1)
+      }
+
+      if (!unlinkAllFiltered && (notFound > 0 || invalid > 0)) {
+        setMainProductsStatus(`Отвязано: ${unlinked}, не найдено: ${notFound}, некорректно: ${invalid}.`)
+      } else {
+        setMainProductsStatus(`Отвязано от категории: ${unlinked}.`)
+      }
+    } catch (err) {
+      setMainProductsStatus(err.message || 'Не удалось отвязать выбранные товары от категории')
+    } finally {
+      setMainProductsActionKey('')
+    }
+  }
+
   const handleSyncMainProductsFromBillz = async () => {
     try {
       setMainProductsBillzSyncing(true)
@@ -1504,9 +1934,10 @@ function App() {
   const buildMainProductsQueryParams = () => {
     const params = new URLSearchParams()
     if (mainProductsSearch.trim()) params.set('search', mainProductsSearch.trim())
-    if (selectedMainProductsCategories.length > 0) {
-      params.set('categoryIds', selectedMainProductsCategories.map((cat) => cat.id).join(','))
+    if (selectedMainProductsSourceCategoryKeysParam) {
+      params.set('sourceCategoryKeys', selectedMainProductsSourceCategoryKeysParam)
     }
+    if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
     return params
   }
 
@@ -1529,22 +1960,45 @@ function App() {
     const categoryId = isMongoObjectId(product?.categoryId) ? String(product.categoryId) : ''
     const productCoverUrls = extractCoverUrlsFromProduct(product).map((item) => normalizeImageValue(item))
     const primaryCoverUrl = normalizeImageValue(product?.coverUrl || '') || productCoverUrls[0] || ''
+    const authorRefs = Array.isArray(product?.authorRefs) ? product.authorRefs : []
+    const tagRefs = Array.isArray(product?.tagRefs) ? product.tagRefs : []
+    const genreRefs = Array.isArray(product?.genreRefs) ? product.genreRefs : []
+    const authorNames = Array.isArray(product?.authorNames) && product.authorNames.length > 0
+      ? product.authorNames
+      : extractRefNames(authorRefs)
+    const tagNames = Array.isArray(product?.tagNames) && product.tagNames.length > 0
+      ? product.tagNames
+      : extractRefNames(tagRefs)
+    const genreNames = Array.isArray(product?.genreNames) && product.genreNames.length > 0
+      ? product.genreNames
+      : extractRefNames(genreRefs)
+
     setMainProductImageUploading(false)
     setMainProductsStatus('')
     setMainProductForm({
       name: String(product?.name || ''),
       isbn: String(product?.isbn || ''),
       authorCover: String(product?.authorCover || ''),
-      authorNames: Array.isArray(product?.authorNames) ? product.authorNames.join(', ') : '',
+      authorNames: authorNames.join(', '),
+      authorRefsJson: formatRefsJsonInput(authorRefs),
+      tagRefsJson: formatRefsJsonInput(tagRefs),
+      genreRefsJson: formatRefsJsonInput(genreRefs),
+      tagNames: tagNames.join(', '),
+      genreNames: genreNames.join(', '),
       annotation: String(product?.annotation || ''),
       coverUrl: primaryCoverUrl,
       coverUrls: normalizeCoverUrls(productCoverUrls),
+      pages: formatOptionalNumberForInput(product?.pages),
+      format: String(product?.format || ''),
+      paperType: String(product?.paperType || ''),
+      bindingType: String(product?.bindingType || ''),
       ageRestriction: String(product?.ageRestriction || ''),
       subjectName: String(product?.subjectName || ''),
       nicheName: String(product?.nicheName || ''),
       brandName: String(product?.brandName || ''),
       seriesName: String(product?.seriesName || ''),
       publisherName: String(product?.publisherName || ''),
+      categoryPath: Array.isArray(product?.categoryPath) ? product.categoryPath.join(' / ') : '',
       quantity: formatOptionalNumberForInput(product?.quantity),
       price: formatOptionalNumberForInput(product?.price),
       categoryId,
@@ -1710,37 +2164,56 @@ function App() {
     }
   }
 
-  const buildMainProductPayload = (form) => ({
-    name: String(form.name || '').trim(),
-    isbn: String(form.isbn || '').trim(),
-    authorCover: String(form.authorCover || '').trim(),
-    authorNames: splitCommaValue(form.authorNames),
-    annotation: String(form.annotation || '').trim(),
-    coverUrl: (() => {
-      const typed = normalizeImageValue(form.coverUrl)
-      if (typed) return typed
-      const uploaded = normalizeCoverUrls(form.coverUrls).map((item) => normalizeImageValue(item))
-      return uploaded[0] || ''
-    })(),
-    coverUrls: (() => {
-      const uploaded = normalizeCoverUrls(form.coverUrls).map((item) => normalizeImageValue(item))
-      const typed = normalizeImageValue(form.coverUrl)
-      if (!typed) return uploaded
-      return normalizeCoverUrls([typed, ...uploaded])
-    })(),
-    ageRestriction: String(form.ageRestriction || '').trim(),
-    subjectName: String(form.subjectName || '').trim(),
-    nicheName: String(form.nicheName || '').trim(),
-    brandName: String(form.brandName || '').trim(),
-    seriesName: String(form.seriesName || '').trim(),
-    publisherName: String(form.publisherName || '').trim(),
-    quantity: parseOptionalNumber(form.quantity),
-    price: parseOptionalNumber(form.price),
-    categoryId: String(form.categoryId || '').trim(),
-    sourceGuidNom: String(form.sourceGuidNom || '').trim(),
-    sourceGuid: String(form.sourceGuid || '').trim(),
-    sourceNomcode: String(form.sourceNomcode || '').trim()
-  })
+  const buildMainProductPayload = (form) => {
+    const authorRefs = sanitizeAuthorRefs(parseRefsJsonInput(form.authorRefsJson, 'Авторы'))
+    const tagRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.tagRefsJson, 'Теги'))
+    const genreRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.genreRefsJson, 'Жанры'))
+    const authorNames = splitCommaValue(form.authorNames)
+    const tagNames = splitCommaValue(form.tagNames)
+    const genreNames = splitCommaValue(form.genreNames)
+
+    return {
+      name: String(form.name || '').trim(),
+      isbn: String(form.isbn || '').trim(),
+      authorCover: String(form.authorCover || '').trim(),
+      authorNames,
+      authorRefs,
+      tagRefs,
+      genreRefs,
+      tagNames,
+      genreNames,
+      annotation: String(form.annotation || '').trim(),
+      coverUrl: (() => {
+        const typed = normalizeImageValue(form.coverUrl)
+        if (typed) return typed
+        const uploaded = normalizeCoverUrls(form.coverUrls).map((item) => normalizeImageValue(item))
+        return uploaded[0] || ''
+      })(),
+      coverUrls: (() => {
+        const uploaded = normalizeCoverUrls(form.coverUrls).map((item) => normalizeImageValue(item))
+        const typed = normalizeImageValue(form.coverUrl)
+        if (!typed) return uploaded
+        return normalizeCoverUrls([typed, ...uploaded])
+      })(),
+      pages: parseOptionalInteger(form.pages),
+      format: String(form.format || '').trim(),
+      paperType: String(form.paperType || '').trim(),
+      bindingType: String(form.bindingType || '').trim(),
+      ageRestriction: String(form.ageRestriction || '').trim(),
+      subjectName: String(form.subjectName || '').trim(),
+      nicheName: String(form.nicheName || '').trim(),
+      brandName: String(form.brandName || '').trim(),
+      seriesName: String(form.seriesName || '').trim(),
+      publisherName: String(form.publisherName || '').trim(),
+      categoryPath: splitPathValue(form.categoryPath),
+      quantity: parseOptionalNumber(form.quantity),
+      price: parseOptionalNumber(form.price),
+      categoryId: String(form.categoryId || '').trim(),
+      sourceGuidNom: String(form.sourceGuidNom || '').trim(),
+      sourceGuid: String(form.sourceGuid || '').trim(),
+      sourceNomcode: String(form.sourceNomcode || '').trim()
+    }
+  }
 
   const handleCreateMainProduct = async (event) => {
     event.preventDefault()
@@ -1750,17 +2223,17 @@ function App() {
       return
     }
 
-    const payload = buildMainProductPayload(mainProductForm)
-    payload.name = name
-
-    frontendDebugLog('info', 'create_start', {
-      name: payload.name,
-      categoryId: payload.categoryId,
-      coverUrl: payload.coverUrl,
-      coverUrlsCount: Array.isArray(payload.coverUrls) ? payload.coverUrls.length : 0
-    })
-
     try {
+      const payload = buildMainProductPayload(mainProductForm)
+      payload.name = name
+
+      frontendDebugLog('info', 'create_start', {
+        name: payload.name,
+        categoryId: payload.categoryId,
+        coverUrl: payload.coverUrl,
+        coverUrlsCount: Array.isArray(payload.coverUrls) ? payload.coverUrls.length : 0
+      })
+
       setMainProductCreating(true)
       setMainProductsStatus('Создание основного товара...')
       const response = await fetch(`${API_BASE_URL}/mainProducts`, {
@@ -1816,18 +2289,18 @@ function App() {
       return
     }
 
-    const payload = buildMainProductPayload(mainProductForm)
-    payload.name = name
-
-    frontendDebugLog('info', 'update_start', {
-      productId: editingMainProductId,
-      name: payload.name,
-      categoryId: payload.categoryId,
-      coverUrl: payload.coverUrl,
-      coverUrlsCount: Array.isArray(payload.coverUrls) ? payload.coverUrls.length : 0
-    })
-
     try {
+      const payload = buildMainProductPayload(mainProductForm)
+      payload.name = name
+
+      frontendDebugLog('info', 'update_start', {
+        productId: editingMainProductId,
+        name: payload.name,
+        categoryId: payload.categoryId,
+        coverUrl: payload.coverUrl,
+        coverUrlsCount: Array.isArray(payload.coverUrls) ? payload.coverUrls.length : 0
+      })
+
       setMainProductEditing(true)
       setMainProductsActionKey(`edit:${editingMainProductId}`)
       setMainProductsStatus('Сохранение изменений...')
@@ -1974,11 +2447,10 @@ function App() {
   const selectedMainCategoryPathText = selectedMainCategory?.path?.join(' / ') || 'Основная категория не выбрана'
   const selectedMainProductsCategoryPathText =
     selectedMainProductsCategories.length === 0
-      ? 'Все категории'
+      ? 'Не выбрана'
       : selectedMainProductsCategories.length === 1
         ? selectedMainProductsCategories[0].path?.join(' / ') || selectedMainProductsCategories[0].name
         : `${selectedMainProductsCategories.length} категорий выбрано`
-  const mainCategoryOptions = useMemo(() => flattenMainCategoryOptions(mainCategories), [mainCategories])
 
   const categoryDropdownMenu =
     isCategoryDropdownOpen && typeof document !== 'undefined'
@@ -2171,6 +2643,9 @@ function App() {
                 <button className="btn primary" type="button" onClick={handleCopyGroup} disabled={copying || !selectedMainCategory?.id || eksmoActionBusy}>
                   {copying ? 'Копирование...' : `Копировать группой (${productsLimit} макс)`}
                 </button>
+                <button className="btn" type="button" onClick={handleCopyMissingToMain} disabled={copying || eksmoActionBusy}>
+                  {copying ? 'Копирование...' : 'Добавить отсутствующие в Main'}
+                </button>
                 <button className="btn table-btn danger" type="button" onClick={handleDeleteSelectedEksmoProducts} disabled={selectedProductIds.length === 0 || copying || eksmoActionBusy}>
                   {eksmoActionKey === 'bulk-delete' ? 'Удаление...' : `Удалить выбранные (${Math.min(selectedProductIds.length, MAX_PRODUCTS_LIMIT)})`}
                 </button>
@@ -2255,9 +2730,9 @@ function App() {
           <aside className="sidebar">
             <div className="sidebar-panel">
               <h2>Основные категории</h2>
-              <p className="sidebar-hint">Фильтруйте основные товары по одной или нескольким категориям.</p>
+              <p className="sidebar-hint">Выберите одну категорию для привязки выбранных основных товаров.</p>
               <p className="sidebar-selected" title={selectedMainProductsCategoryPathText}>
-                Фильтр: {selectedMainProductsCategoryPathText}
+                Категория: {selectedMainProductsCategoryPathText}
               </p>
               {mainCategoriesLoading ? (
                 <p className="sidebar-loading">Загрузка...</p>
@@ -2289,6 +2764,14 @@ function App() {
                 <span className="product-count">{mainProductsTotalItems.toLocaleString()} товаров</span>
               </div>
               <div className="header-right">
+                <div className="view-toggle" role="group" aria-label="режим отображения основных товаров">
+                  <button type="button" className={mainProductsViewMode === 'cards' ? 'active' : ''} onClick={() => setMainProductsViewMode('cards')}>
+                    Карточки
+                  </button>
+                  <button type="button" className={mainProductsViewMode === 'list' ? 'active' : ''} onClick={() => setMainProductsViewMode('list')}>
+                    Список
+                  </button>
+                </div>
                 <button className="btn" type="button" onClick={openMainProductModal} disabled={mainProductCreating || mainProductEditing || mainProductImageUploading || mainProductsImporting}>
                   Добавить товар
                 </button>
@@ -2338,10 +2821,47 @@ function App() {
                 {mainProductsSearchPending && <span className="search-pending-dot" aria-hidden="true" />}
               </div>
               <label className="select-all">
-                <input type="checkbox" checked={allVisibleMainProductsSelected} onChange={toggleSelectAllVisibleMainProducts} disabled={visibleMainProductIds.length === 0 || mainProductsActionKey === 'bulk-delete'} />
+                <input
+                  type="checkbox"
+                  checked={allVisibleMainProductsSelected}
+                  onChange={toggleSelectAllVisibleMainProducts}
+                  disabled={visibleMainProductIds.length === 0 || mainProductsActionKey !== '' || selectAllFilteredMainProducts}
+                />
                 <span>Выбрать страницу ({selectedVisibleMainProductsCount}/{selectPageMainProductsCount})</span>
               </label>
-              <span className="selected-count">Выбрано: {selectedMainProductIds.length}</span>
+              <label className="select-all">
+                <input
+                  type="checkbox"
+                  checked={selectAllFilteredMainProducts}
+                  onChange={toggleSelectAllFilteredMainProducts}
+                  disabled={mainProductsTotalItems === 0 || mainProductsActionKey !== ''}
+                />
+                <span>Выбрать все по фильтру ({mainProductsTotalItems.toLocaleString()})</span>
+              </label>
+              <span className="selected-count">Выбрано: {selectedMainProductsCount.toLocaleString()}</span>
+              <FilterTreeSelect
+                label="Категория"
+                nodes={mainProductsSourceCategories}
+                selectedValues={mainProductsCategoryFilter}
+                onChange={setMainProductsCategoryFilter}
+                loading={mainProductsSourceCategoriesLoading}
+              />
+              <button
+                className="btn table-btn"
+                type="button"
+                onClick={handleLinkSelectedMainProductsToCategory}
+                disabled={selectedMainProductsCount === 0 || selectedMainProductsCategories.length !== 1 || mainProductsActionKey !== ''}
+              >
+                {mainProductsActionKey === 'bulk-link-category' ? 'Привязка...' : 'Связать с категорией'}
+              </button>
+              <button
+                className="btn table-btn"
+                type="button"
+                onClick={handleUnlinkSelectedMainProductsCategory}
+                disabled={selectedMainProductsCount === 0 || mainProductsActionKey !== ''}
+              >
+                {mainProductsActionKey === 'bulk-unlink-category' ? 'Отвязка...' : 'Отвязать от категории'}
+              </button>
               <button className="btn table-btn" type="button" onClick={() => handleExportMainProducts('csv')} disabled={mainProductsLoading || mainProductsImporting}>
                 Экспорт CSV
               </button>
@@ -2362,7 +2882,7 @@ function App() {
                 className="btn table-btn danger"
                 type="button"
                 onClick={handleDeleteSelectedMainProducts}
-                disabled={selectedMainProductIds.length === 0 || mainProductsActionKey !== ''}
+                disabled={selectedMainProductIds.length === 0 || mainProductsActionKey !== '' || selectAllFilteredMainProducts}
               >
                 {mainProductsActionKey === 'bulk-delete' ? 'Удаление...' : `Удалить выбранные (${Math.min(selectedMainProductIds.length, MAX_PRODUCTS_LIMIT)})`}
               </button>
@@ -2377,79 +2897,120 @@ function App() {
 
             {!mainProductsLoading && !mainProductsError && mainProducts.length > 0 && (
               <>
-                <div className="main-products-table-wrap">
-                  <table className="main-products-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: '48px' }}></th>
-                        <th>Название</th>
-                        <th>Автор</th>
-                        <th>ISBN</th>
-                        <th>Количество</th>
-                        <th>Цена</th>
-                        <th>Категория</th>
-                        <th>Действия</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {mainProducts.map((product) => {
-                        const id = getMainProductId(product)
-                        const categoryText = Array.isArray(product.categoryPath) && product.categoryPath.length > 0 ? product.categoryPath.join(' / ') : 'Без категории'
-                        const actionDeletingModel = mainProductsActionKey === `delete:${id}`
-                        const actionEditingModel = mainProductsActionKey === `edit:${id}`
-                        const actionBusy = Boolean(mainProductsActionKey)
+                {mainProductsViewMode === 'cards' ? (
+                  <div
+                    className="products-grid"
+                    style={{ gridTemplateColumns: `repeat(${clampCardColumns(mainProductsCardColumns)}, minmax(0, 1fr))` }}
+                  >
+                    {mainProducts.map((product) => {
+                      const id = getMainProductId(product)
+                      const actionDeletingModel = mainProductsActionKey === `delete:${id}`
+                      const actionEditingModel = mainProductsActionKey === `edit:${id}`
+                      const actionBusy = Boolean(mainProductsActionKey)
 
-                        return (
-                          <tr key={id || product.sourceGuidNom || product.sourceGuid || product.name}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                checked={id ? selectedMainProductIds.includes(id) : false}
-                                disabled={!id || actionBusy}
-                                onChange={() => toggleMainProductSelection(id)}
-                              />
-                            </td>
-                            <td>{product.name || 'Без названия'}</td>
-                            <td>{product.authorNames?.join(', ') || product.authorCover || '-'}</td>
-                            <td>{product.isbn || '-'}</td>
-                            <td>{formatMainMetric(product.quantity, 3)}</td>
-                            <td>{formatMainMetric(product.price, 2)}</td>
-                            <td>{categoryText}</td>
-                            <td>
-                              <div className="table-actions">
-                                <button
-                                  className="btn table-btn"
-                                  type="button"
-                                  onClick={() => setDetailsProduct(product)}
-                                >
-                                  <EyeIcon />
-                                  Просмотр
-                                </button>
-                                <button
-                                  className="btn table-btn"
-                                  type="button"
-                                  disabled={!id || actionBusy}
-                                  onClick={() => openEditMainProductModal(product)}
-                                >
-                                  <EditIcon />
-                                  {actionEditingModel ? 'Сохранение...' : 'Изменить'}
-                                </button>
-                                <button
-                                  className="btn table-btn danger"
-                                  type="button"
-                                  disabled={!id || actionBusy}
-                                  onClick={() => handleDeleteMainProduct(id)}
-                                >
-                                  {actionDeletingModel ? 'Удаление...' : 'Удалить из модели'}
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                      return (
+                        <MainProductCard
+                          key={id || product.sourceGuidNom || product.sourceGuid || product.name}
+                          product={product}
+                          checked={id ? selectedMainProductIds.includes(id) : false}
+                          selectable={Boolean(id) && !actionBusy && !selectAllFilteredMainProducts}
+                          onToggle={() => toggleMainProductSelection(id)}
+                          onViewDetails={() => setDetailsProduct(product)}
+                          onEdit={() => openEditMainProductModal(product)}
+                          onDelete={() => handleDeleteMainProduct(id)}
+                          editDisabled={!id || actionBusy}
+                          deleteDisabled={!id || actionBusy}
+                          editing={actionEditingModel}
+                          deleting={actionDeletingModel}
+                        />
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="main-products-table-wrap">
+                    <table className="main-products-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: '48px' }}></th>
+                          <th>Обложка</th>
+                          <th>Название</th>
+                          <th>Автор</th>
+                          <th>ISBN</th>
+                          <th>Количество</th>
+                          <th>Цена</th>
+                          <th>Категория</th>
+                          <th>Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {mainProducts.map((product) => {
+                          const id = getMainProductId(product)
+                          const categoryText = Array.isArray(product.categoryPath) && product.categoryPath.length > 0 ? product.categoryPath.join(' / ') : 'Без категории'
+                          const actionDeletingModel = mainProductsActionKey === `delete:${id}`
+                          const actionEditingModel = mainProductsActionKey === `edit:${id}`
+                          const actionBusy = Boolean(mainProductsActionKey)
+
+                          return (
+                            <tr key={id || product.sourceGuidNom || product.sourceGuid || product.name}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  checked={id ? selectedMainProductIds.includes(id) : false}
+                                  disabled={!id || actionBusy || selectAllFilteredMainProducts}
+                                  onChange={() => toggleMainProductSelection(id)}
+                                />
+                              </td>
+                              <td>
+                                <div className="main-products-cover-cell">
+                                  {product.coverUrl ? (
+                                    <img src={resolveImageUrl(product.coverUrl)} alt={product.name || ''} loading="lazy" />
+                                  ) : (
+                                    <div className="no-cover">Нет изображения</div>
+                                  )}
+                                </div>
+                              </td>
+                              <td>{product.name || 'Без названия'}</td>
+                              <td>{product.authorNames?.join(', ') || product.authorCover || '-'}</td>
+                              <td>{product.isbn || '-'}</td>
+                              <td>{formatMainMetric(product.quantity, 3)}</td>
+                              <td>{formatMainMetric(product.price, 2)}</td>
+                              <td>{categoryText}</td>
+                              <td>
+                                <div className="table-actions">
+                                  <button
+                                    className="btn table-btn"
+                                    type="button"
+                                    onClick={() => setDetailsProduct(product)}
+                                  >
+                                    <EyeIcon />
+                                    Просмотр
+                                  </button>
+                                  <button
+                                    className="btn table-btn"
+                                    type="button"
+                                    disabled={!id || actionBusy}
+                                    onClick={() => openEditMainProductModal(product)}
+                                  >
+                                    <EditIcon />
+                                    {actionEditingModel ? 'Сохранение...' : 'Изменить'}
+                                  </button>
+                                  <button
+                                    className="btn table-btn danger"
+                                    type="button"
+                                    disabled={!id || actionBusy}
+                                    onClick={() => handleDeleteMainProduct(id)}
+                                  >
+                                    {actionDeletingModel ? 'Удаление...' : 'Удалить из модели'}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
 
                 <Pagination
                   page={mainProductsPage}
@@ -2458,6 +3019,9 @@ function App() {
                   pageSize={mainProductsLimit}
                   onPageChange={setMainProductsPage}
                   onPageSizeChange={handleMainProductsLimitChange}
+                  showCardColumnsControl={mainProductsViewMode === 'cards'}
+                  cardColumns={mainProductsCardColumns}
+                  onCardColumnsChange={(value) => setMainProductsCardColumns(clampCardColumns(value))}
                   itemLabel="товаров"
                 />
               </>
@@ -2631,13 +3195,41 @@ function App() {
   )
 }
 
-function Pagination({ page, totalPages, totalItems, pageSize, onPageChange, onPageSizeChange, itemLabel = 'элементов' }) {
+function Pagination({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+  onPageSizeChange,
+  showCardColumnsControl = false,
+  cardColumns = 4,
+  onCardColumnsChange = () => {},
+  itemLabel = 'элементов'
+}) {
   const safeTotalPages = Math.max(1, Number(totalPages) || 1)
   const safePage = Math.min(Math.max(1, Number(page) || 1), safeTotalPages)
   const items = getPaginationItems(safePage, safeTotalPages)
   const hasPrev = safePage > 1
   const hasNext = safePage < safeTotalPages
   const totalLabel = Number(totalItems || 0).toLocaleString()
+  const [jumpPageValue, setJumpPageValue] = useState(String(safePage))
+
+  useEffect(() => {
+    setJumpPageValue(String(safePage))
+  }, [safePage])
+
+  const handleJumpSubmit = (event) => {
+    event.preventDefault()
+    const parsed = Number.parseInt(String(jumpPageValue || '').trim(), 10)
+    if (!Number.isFinite(parsed)) {
+      setJumpPageValue(String(safePage))
+      return
+    }
+    const targetPage = Math.min(Math.max(parsed, 1), safeTotalPages)
+    setJumpPageValue(String(targetPage))
+    if (targetPage !== safePage) onPageChange(targetPage)
+  }
 
   return (
     <div className="pagination" aria-label="Пагинация">
@@ -2696,6 +3288,18 @@ function Pagination({ page, totalPages, totalItems, pageSize, onPageChange, onPa
         <span className="pagination-total">
           {totalLabel} {itemLabel}
         </span>
+        {showCardColumnsControl && (
+          <label className="pagination-columns-control">
+            <span>Колонки</span>
+            <select value={clampCardColumns(cardColumns)} onChange={(event) => onCardColumnsChange(event.target.value)} aria-label="Колонок в карточках">
+              {CARD_COLUMNS_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="pagination-size-control">
           <span>Показать</span>
           <select value={pageSize} onChange={(event) => onPageSizeChange(event.target.value)} aria-label="Строк на странице">
@@ -2706,7 +3310,222 @@ function Pagination({ page, totalPages, totalItems, pageSize, onPageChange, onPa
             ))}
           </select>
         </label>
+        <form className="pagination-jump-control" onSubmit={handleJumpSubmit}>
+          <span>Страница</span>
+          <input
+            type="number"
+            min="1"
+            max={safeTotalPages}
+            inputMode="numeric"
+            value={jumpPageValue}
+            onChange={(event) => setJumpPageValue(event.target.value.replace(/[^\d]/g, ''))}
+            aria-label="Номер страницы"
+          />
+          <button type="submit" className="pagination-jump-btn">
+            Перейти
+          </button>
+        </form>
       </div>
+    </div>
+  )
+}
+
+function FilterTreeSelect({ label, nodes, selectedValues, onChange, loading = false }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuStyle, setMenuStyle] = useState({})
+  const [searchQuery, setSearchQuery] = useState('')
+  const [expanded, setExpanded] = useState({})
+  const containerRef = useRef(null)
+  const buttonRef = useRef(null)
+  const menuRef = useRef(null)
+
+  const normalizedSearchQuery = String(searchQuery || '')
+    .trim()
+    .toLowerCase()
+  const selectedSet = useMemo(() => new Set(Array.isArray(selectedValues) ? selectedValues : []), [selectedValues])
+  const visibleNodes = useMemo(
+    () => filterTreeNodesByQuery(Array.isArray(nodes) ? nodes : [], normalizedSearchQuery),
+    [nodes, normalizedSearchQuery]
+  )
+  const nodeNameById = useMemo(() => {
+    const map = new Map()
+    const walk = (items) => {
+      for (const item of Array.isArray(items) ? items : []) {
+        const id = String(item?.id || '').trim()
+        if (id) map.set(id, String(item?.name || '').trim() || id)
+        if (Array.isArray(item?.children) && item.children.length > 0) walk(item.children)
+      }
+    }
+    walk(nodes)
+    return map
+  }, [nodes])
+
+  useEffect(() => {
+    if (isOpen) return
+    setSearchQuery('')
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+    const handleOutsideClick = (event) => {
+      const clickedInsideButton = containerRef.current?.contains(event.target)
+      const clickedInsideMenu = menuRef.current?.contains(event.target)
+      if (!clickedInsideButton && !clickedInsideMenu) setIsOpen(false)
+    }
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+    document.addEventListener('mousedown', handleOutsideClick)
+    document.addEventListener('keydown', handleEscape)
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick)
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [isOpen])
+
+  useEffect(() => {
+    if (!isOpen) return
+    const updateMenuPosition = () => {
+      if (!buttonRef.current || typeof window === 'undefined') return
+      const rect = buttonRef.current.getBoundingClientRect()
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+      const width = Math.max(rect.width, 280)
+      const left = Math.max(8, Math.min(rect.left, viewportWidth - width - 8))
+      const top = Math.min(rect.bottom + 6, Math.max(8, viewportHeight - 220))
+      const maxHeight = Math.min(360, Math.max(160, viewportHeight - top - 12))
+
+      setMenuStyle({
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${width}px`,
+        maxHeight: `${maxHeight}px`
+      })
+    }
+    updateMenuPosition()
+    window.addEventListener('resize', updateMenuPosition)
+    window.addEventListener('scroll', updateMenuPosition, true)
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition)
+      window.removeEventListener('scroll', updateMenuPosition, true)
+    }
+  }, [isOpen])
+
+  const toggleValue = (value) => {
+    const current = Array.isArray(selectedValues) ? selectedValues : []
+    if (current.includes(value)) {
+      onChange(current.filter((item) => item !== value))
+      return
+    }
+    onChange([...current, value])
+  }
+
+  const selectedCount = Array.isArray(selectedValues) ? selectedValues.length : 0
+  const buttonLabel = (() => {
+    if (selectedCount === 0) return label
+    if (selectedCount > 1) return `${selectedCount} выбрано`
+    const selectedId = selectedValues[0]
+    return nodeNameById.get(selectedId) || label
+  })()
+  const title = selectedCount <= 1 ? buttonLabel : `${label}: ${selectedValues.join(', ')}`
+  const forceOpen = Boolean(normalizedSearchQuery)
+
+  const renderNode = (node, depth = 0) => {
+    const id = String(node?.id || '').trim()
+    if (!id) return null
+    const children = Array.isArray(node?.children) ? node.children : []
+    const hasChildren = children.length > 0
+    const isOpenNode = forceOpen || Boolean(expanded[id])
+    const checked = selectedSet.has(id)
+
+    return (
+      <div key={id} className="tree-node" style={{ paddingLeft: depth * 14 }}>
+        <div className="tree-row">
+          {hasChildren && !forceOpen ? (
+            <button
+              className="expand-btn"
+              type="button"
+              onClick={() => setExpanded((prev) => ({ ...prev, [id]: !prev[id] }))}
+            >
+              {isOpenNode ? '−' : '+'}
+            </button>
+          ) : (
+            <span className="expand-placeholder" />
+          )}
+          <label className="tree-label">
+            <input type="checkbox" checked={checked} onChange={() => toggleValue(id)} />
+            <span>{node?.name || id}</span>
+          </label>
+        </div>
+        {hasChildren && isOpenNode && (
+          <div className="tree-children">
+            {children.map((child) => renderNode(child, depth + 1))}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const menu =
+    isOpen && typeof document !== 'undefined'
+      ? createPortal(
+          <div ref={menuRef} className="filter-dropdown-menu filter-tree-menu" style={menuStyle}>
+            <div className="filter-dropdown-menu-head">
+              <span>{label}</span>
+              {selectedCount > 0 && (
+                <button
+                  type="button"
+                  className="filter-dropdown-clear"
+                  onClick={() => {
+                    onChange([])
+                  }}
+                >
+                  Очистить
+                </button>
+              )}
+            </div>
+            <div className="filter-dropdown-search-wrap">
+              <input
+                type="text"
+                className="filter-dropdown-search-input"
+                value={searchQuery}
+                placeholder={`Поиск ${label.toLowerCase()}...`}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </div>
+            <div className="filter-dropdown-options filter-tree-options">
+              {loading ? (
+                <p className="filter-dropdown-empty">Загрузка...</p>
+              ) : visibleNodes.length === 0 ? (
+                <p className="filter-dropdown-empty">Нет категорий</p>
+              ) : (
+                <div className="tree-container filter-tree-container">
+                  {visibleNodes.map((node) => renderNode(node, 0))}
+                </div>
+              )}
+            </div>
+          </div>,
+          document.body
+        )
+      : null
+
+  return (
+    <div className="filter-dropdown filter-tree-dropdown" ref={containerRef}>
+      <button
+        ref={buttonRef}
+        type="button"
+        className={`filter-dropdown-btn ${selectedCount > 0 ? 'has-selection' : ''}`}
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        title={title}
+        onClick={() => setIsOpen((prev) => !prev)}
+      >
+        <span className="filter-dropdown-text">{buttonLabel}</span>
+        <span className="arrow">{isOpen ? '▲' : '▼'}</span>
+      </button>
+      {menu}
     </div>
   )
 }
@@ -2714,10 +3533,6 @@ function Pagination({ page, totalPages, totalItems, pageSize, onPageChange, onPa
 function BottomNav({ activePage, onChange }) {
   return (
     <nav className="bottom-nav" aria-label="Навигация по страницам">
-      <button type="button" className={`bottom-nav-link ${activePage === 'eksmo' ? 'active' : ''}`} onClick={() => onChange('eksmo')}>
-        <HomeIcon />
-        <span>Все товары</span>
-      </button>
       <button type="button" className={`bottom-nav-link ${activePage === 'mainProducts' ? 'active' : ''}`} onClick={() => onChange('mainProducts')}>
         <BoxIcon />
         <span>Основные товары</span>
@@ -3021,6 +3836,97 @@ function MainCategoryNode({ node, depth, path, expanded, onToggle, selectedCateg
         </div>
       )}
     </div>
+  )
+}
+
+function MainProductCard({
+  product,
+  checked,
+  selectable,
+  onToggle,
+  onViewDetails,
+  onEdit,
+  onDelete,
+  editDisabled = false,
+  deleteDisabled = false,
+  editing = false,
+  deleting = false
+}) {
+  const authors = product.authorNames?.join(', ') || product.authorCover || 'Неизвестно'
+  const categoryText = Array.isArray(product.categoryPath) && product.categoryPath.length > 0 ? product.categoryPath.join(' / ') : 'Без категории'
+  const handleToggle = () => {
+    if (!selectable) return
+    onToggle()
+  }
+  const handleKeyDown = (event) => {
+    if (!selectable) return
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      onToggle()
+    }
+  }
+
+  return (
+    <article
+      className={`product-card ${selectable ? 'selectable' : ''} ${checked ? 'selected' : ''}`}
+      onClick={handleToggle}
+      onKeyDown={handleKeyDown}
+      role={selectable ? 'checkbox' : undefined}
+      aria-checked={selectable ? checked : undefined}
+      tabIndex={selectable ? 0 : -1}
+    >
+      <label className={`product-check ${!selectable ? 'disabled' : ''}`} onClick={(event) => event.stopPropagation()}>
+        <input type="checkbox" checked={checked} disabled={!selectable} onClick={(event) => event.stopPropagation()} onChange={onToggle} />
+      </label>
+      <button
+        type="button"
+        className="product-view-btn"
+        aria-label="Просмотр деталей товара"
+        title="Открыть детали"
+        onClick={(event) => {
+          event.stopPropagation()
+          onViewDetails()
+        }}
+      >
+        <EyeIcon />
+      </button>
+      <div className="cover-wrap">
+        {product.coverUrl ? <img src={resolveImageUrl(product.coverUrl)} alt={product.name || ''} loading="lazy" /> : <div className="no-cover">Нет изображения</div>}
+      </div>
+      <div className="product-info">
+        <h3>{product.name || 'Без названия'}</h3>
+        <p className="author">{authors}</p>
+        <p className="meta">{product.isbn || '-'}</p>
+        <p className="meta">{categoryText}</p>
+        <p className="meta">Кол-во: {formatMainMetric(product.quantity, 3)} · Цена: {formatMainMetric(product.price, 2)}</p>
+        <div className="main-product-card-actions">
+          <button
+            type="button"
+            className="btn table-btn"
+            disabled={editDisabled}
+            onClick={(event) => {
+              event.stopPropagation()
+              onEdit?.()
+            }}
+          >
+            <EditIcon />
+            {editing ? 'Сохранение...' : 'Изменить'}
+          </button>
+          <button
+            type="button"
+            className="btn table-btn danger"
+            disabled={deleteDisabled}
+            onClick={(event) => {
+              event.stopPropagation()
+              onDelete?.()
+            }}
+          >
+            <TrashIcon />
+            {deleting ? 'Удаление...' : 'Удалить'}
+          </button>
+        </div>
+      </div>
+    </article>
   )
 }
 
@@ -3623,6 +4529,16 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
               <input type="text" value={form.authorNames} onChange={(e) => onChange('authorNames', e.target.value)} placeholder="Автор 1, Автор 2" />
             </label>
 
+            <label className="main-product-field full">
+              <span>Теги (через запятую)</span>
+              <input type="text" value={form.tagNames} onChange={(e) => onChange('tagNames', e.target.value)} placeholder="Тег 1, Тег 2" />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Жанры (через запятую)</span>
+              <input type="text" value={form.genreNames} onChange={(e) => onChange('genreNames', e.target.value)} placeholder="Жанр 1, Жанр 2" />
+            </label>
+
             <label className="main-product-field">
               <span>Автор на обложке</span>
               <input type="text" value={form.authorCover} onChange={(e) => onChange('authorCover', e.target.value)} />
@@ -3698,6 +4614,26 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             </label>
 
             <label className="main-product-field">
+              <span>Страницы</span>
+              <input type="number" min="0" step="1" value={form.pages} onChange={(e) => onChange('pages', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Формат</span>
+              <input type="text" value={form.format} onChange={(e) => onChange('format', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Тип бумаги</span>
+              <input type="text" value={form.paperType} onChange={(e) => onChange('paperType', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Тип переплета</span>
+              <input type="text" value={form.bindingType} onChange={(e) => onChange('bindingType', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
               <span>Тема</span>
               <input type="text" value={form.subjectName} onChange={(e) => onChange('subjectName', e.target.value)} />
             </label>
@@ -3720,6 +4656,17 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             <label className="main-product-field">
               <span>Издатель</span>
               <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Путь категории</span>
+              <input
+                type="text"
+                value={form.categoryPath}
+                onChange={(e) => onChange('categoryPath', e.target.value)}
+                placeholder="Категория / Подкатегория / ..."
+              />
+              <small className="main-product-field-hint">Можно вводить через ` / ` или запятую.</small>
             </label>
 
             <label className="main-product-field">
@@ -3745,6 +4692,36 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             <label className="main-product-field full">
               <span>Исходный NOMCODE</span>
               <input type="text" value={form.sourceNomcode} onChange={(e) => onChange('sourceNomcode', e.target.value)} />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Авторы (refs JSON)</span>
+              <textarea
+                value={form.authorRefsJson}
+                onChange={(e) => onChange('authorRefsJson', e.target.value)}
+                rows={4}
+                placeholder='[{"guid":"...","name":"..."}]'
+              />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Теги (refs JSON)</span>
+              <textarea
+                value={form.tagRefsJson}
+                onChange={(e) => onChange('tagRefsJson', e.target.value)}
+                rows={4}
+                placeholder='[{"guid":"...","name":"..."}]'
+              />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Жанры (refs JSON)</span>
+              <textarea
+                value={form.genreRefsJson}
+                onChange={(e) => onChange('genreRefsJson', e.target.value)}
+                rows={4}
+                placeholder='[{"guid":"...","name":"..."}]'
+              />
             </label>
 
             <label className="main-product-field full">

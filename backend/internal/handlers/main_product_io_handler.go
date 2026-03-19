@@ -84,26 +84,35 @@ var mainProductColumns = []mainProductColumn{
 }
 
 type createMainProductRequest struct {
-	Name           string   `json:"name"`
-	ISBN           string   `json:"isbn"`
-	AuthorCover    string   `json:"authorCover"`
-	AuthorNames    []string `json:"authorNames"`
-	Annotation     string   `json:"annotation"`
-	CoverURL       string   `json:"coverUrl"`
-	CoverURLs      []string `json:"coverUrls"`
-	AgeRestriction string   `json:"ageRestriction"`
-	SubjectName    string   `json:"subjectName"`
-	NicheName      string   `json:"nicheName"`
-	BrandName      string   `json:"brandName"`
-	SeriesName     string   `json:"seriesName"`
-	PublisherName  string   `json:"publisherName"`
-	Quantity       float64  `json:"quantity"`
-	Price          float64  `json:"price"`
-	CategoryID     string   `json:"categoryId"`
-	CategoryPath   []string `json:"categoryPath"`
-	SourceGUIDNOM  string   `json:"sourceGuidNom"`
-	SourceGUID     string   `json:"sourceGuid"`
-	SourceNomCode  string   `json:"sourceNomcode"`
+	Name           string                         `json:"name"`
+	ISBN           string                         `json:"isbn"`
+	AuthorCover    string                         `json:"authorCover"`
+	AuthorNames    []string                       `json:"authorNames"`
+	AuthorRefs     []models.EksmoProductAuthorRef `json:"authorRefs"`
+	TagRefs        []models.EksmoProductTagRef    `json:"tagRefs"`
+	GenreRefs      []models.EksmoProductGenreRef  `json:"genreRefs"`
+	TagNames       []string                       `json:"tagNames"`
+	GenreNames     []string                       `json:"genreNames"`
+	Annotation     string                         `json:"annotation"`
+	CoverURL       string                         `json:"coverUrl"`
+	CoverURLs      []string                       `json:"coverUrls"`
+	Pages          int                            `json:"pages"`
+	Format         string                         `json:"format"`
+	PaperType      string                         `json:"paperType"`
+	BindingType    string                         `json:"bindingType"`
+	AgeRestriction string                         `json:"ageRestriction"`
+	SubjectName    string                         `json:"subjectName"`
+	NicheName      string                         `json:"nicheName"`
+	BrandName      string                         `json:"brandName"`
+	SeriesName     string                         `json:"seriesName"`
+	PublisherName  string                         `json:"publisherName"`
+	Quantity       float64                        `json:"quantity"`
+	Price          float64                        `json:"price"`
+	CategoryID     string                         `json:"categoryId"`
+	CategoryPath   []string                       `json:"categoryPath"`
+	SourceGUIDNOM  string                         `json:"sourceGuidNom"`
+	SourceGUID     string                         `json:"sourceGuid"`
+	SourceNomCode  string                         `json:"sourceNomcode"`
 }
 
 func (h *EksmoProductHandler) CreateMainProduct(c *fiber.Ctx) error {
@@ -521,15 +530,55 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 		}
 	}
 	covers := buildMainProductCoversMap(coverURLs)
+	authorNames := cleanStringSlice(req.AuthorNames)
+	authorRefs := cleanMainProductAuthorRefs(req.AuthorRefs)
+	if len(authorRefs) == 0 && len(authorNames) > 0 {
+		authorRefs = buildMainProductAuthorRefsFromNames(authorNames)
+	}
+	if len(authorNames) == 0 && len(authorRefs) > 0 {
+		authorNames = extractMainProductAuthorNames(authorRefs)
+	}
+
+	tagNames := cleanStringSlice(req.TagNames)
+	tagRefs := cleanMainProductTagRefs(req.TagRefs)
+	if len(tagRefs) == 0 && len(tagNames) > 0 {
+		tagRefs = buildMainProductTagRefsFromNames(tagNames)
+	}
+	if len(tagNames) == 0 && len(tagRefs) > 0 {
+		tagNames = extractMainProductTagNames(tagRefs)
+	}
+
+	genreNames := cleanStringSlice(req.GenreNames)
+	genreRefs := cleanMainProductGenreRefs(req.GenreRefs)
+	if len(genreRefs) == 0 && len(genreNames) > 0 {
+		genreRefs = buildMainProductGenreRefsFromNames(genreNames)
+	}
+	if len(genreNames) == 0 && len(genreRefs) > 0 {
+		genreNames = extractMainProductGenreNames(genreRefs)
+	}
+
+	pages := req.Pages
+	if pages < 0 {
+		pages = 0
+	}
 
 	return models.MainProduct{
 		Name:           strings.TrimSpace(req.Name),
 		ISBN:           strings.TrimSpace(req.ISBN),
 		AuthorCover:    strings.TrimSpace(req.AuthorCover),
-		AuthorNames:    cleanStringSlice(req.AuthorNames),
+		AuthorNames:    authorNames,
+		AuthorRefs:     authorRefs,
+		TagRefs:        tagRefs,
+		GenreRefs:      genreRefs,
+		TagNames:       tagNames,
+		GenreNames:     genreNames,
 		Annotation:     strings.TrimSpace(req.Annotation),
 		CoverURL:       primaryCover,
 		Covers:         covers,
+		Pages:          pages,
+		Format:         strings.TrimSpace(req.Format),
+		PaperType:      strings.TrimSpace(req.PaperType),
+		BindingType:    strings.TrimSpace(req.BindingType),
 		AgeRestriction: strings.TrimSpace(req.AgeRestriction),
 		SubjectName:    strings.TrimSpace(req.SubjectName),
 		NicheName:      strings.TrimSpace(req.NicheName),
@@ -566,6 +615,154 @@ func buildMainProductCoversMap(urls []string) map[string]string {
 	return result
 }
 
+func cleanMainProductAuthorRefs(values []models.EksmoProductAuthorRef) []models.EksmoProductAuthorRef {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]models.EksmoProductAuthorRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Code = strings.TrimSpace(item.Code)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Code == "" && item.Name == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func cleanMainProductTagRefs(values []models.EksmoProductTagRef) []models.EksmoProductTagRef {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]models.EksmoProductTagRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Name == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func cleanMainProductGenreRefs(values []models.EksmoProductGenreRef) []models.EksmoProductGenreRef {
+	if len(values) == 0 {
+		return nil
+	}
+
+	result := make([]models.EksmoProductGenreRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Name == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func buildMainProductAuthorRefsFromNames(names []string) []models.EksmoProductAuthorRef {
+	if len(names) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductAuthorRef, 0, len(names))
+	for _, name := range cleanStringSlice(names) {
+		result = append(result, models.EksmoProductAuthorRef{Name: name})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func buildMainProductTagRefsFromNames(names []string) []models.EksmoProductTagRef {
+	if len(names) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductTagRef, 0, len(names))
+	for _, name := range cleanStringSlice(names) {
+		result = append(result, models.EksmoProductTagRef{Name: name})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func buildMainProductGenreRefsFromNames(names []string) []models.EksmoProductGenreRef {
+	if len(names) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductGenreRef, 0, len(names))
+	for _, name := range cleanStringSlice(names) {
+		result = append(result, models.EksmoProductGenreRef{Name: name})
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func extractMainProductAuthorNames(values []models.EksmoProductAuthorRef) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(values))
+	for _, item := range values {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return cleanStringSlice(names)
+}
+
+func extractMainProductTagNames(values []models.EksmoProductTagRef) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(values))
+	for _, item := range values {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return cleanStringSlice(names)
+}
+
+func extractMainProductGenreNames(values []models.EksmoProductGenreRef) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(values))
+	for _, item := range values {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	return cleanStringSlice(names)
+}
+
 func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 	if h.mainProductRepo == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
@@ -577,7 +774,8 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 	}
 
 	params := repository.MainProductFilterParams{
-		Search: strings.TrimSpace(c.Query("search")),
+		Search:          strings.TrimSpace(c.Query("search")),
+		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
 	}
 
 	categoryIDs := parseObjectIDsCSV(c.Query("categoryIds"))
@@ -589,6 +787,16 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 	params.CategoryIDs = h.expandCategoryFilters(categoryIDs)
 	if len(params.CategoryIDs) == 0 && len(categoryIDs) == 1 {
 		params.CategoryID = categoryIDs[0]
+	}
+	sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(c.Query("sourceCategoryKeys"))
+	params.SourceCategoryPaths = sourceCategoryPaths
+	params.OtherCategoryPaths = otherCategoryPaths
+	params.SourceDomains = sourceDomains
+	if includeWithoutCategory {
+		params.WithoutCategory = true
+	}
+	if includeEksmo {
+		params.IncludeEksmoSources = true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)

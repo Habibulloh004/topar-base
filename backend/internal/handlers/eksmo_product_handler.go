@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"log"
+	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,6 +115,9 @@ func (h *EksmoProductHandler) RegisterRoutes(app *fiber.App) {
 	app.Post("/mainProducts", h.CreateMainProduct)
 	app.Put("/mainProducts/:id", h.UpdateMainProduct)
 	app.Get("/mainProducts", h.GetMainProducts)
+	app.Get("/mainProducts/source-categories", h.GetMainProductsSourceCategories)
+	app.Post("/mainProducts/link-category", h.LinkMainProductsCategory)
+	app.Post("/mainProducts/unlink-category", h.UnlinkMainProductsCategory)
 	app.Get("/mainProducts/export", h.ExportMainProducts)
 	app.Post("/mainProducts/import", h.ImportMainProducts)
 	app.Post("/mainProducts/upload-images", h.UploadMainProductImages)
@@ -336,10 +342,12 @@ func (h *EksmoProductHandler) SyncAll(c *fiber.Ctx) error {
 }
 
 type CopyEksmoProductsToMainRequest struct {
-	CategoryID string   `json:"categoryId"`
-	ProductIDs []string `json:"productIds,omitempty"`
-	Quantity   int      `json:"quantity,omitempty"`
-	Page       int      `json:"page,omitempty"`
+	CategoryID  string   `json:"categoryId"`
+	ProductIDs  []string `json:"productIds,omitempty"`
+	Quantity    int      `json:"quantity,omitempty"`
+	Page        int      `json:"page,omitempty"`
+	OnlyMissing bool     `json:"onlyMissing,omitempty"`
+	AllPages    bool     `json:"allPages,omitempty"`
 
 	Search         string   `json:"search,omitempty"`
 	AuthorGUIDs    []string `json:"authorGuids,omitempty"`
@@ -357,9 +365,6 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 	if h.mainProductRepo == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
 	}
-	if h.categoryLinker == nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "category linker not configured"})
-	}
 
 	var req CopyEksmoProductsToMainRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -367,27 +372,40 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 	}
 
 	req.CategoryID = strings.TrimSpace(req.CategoryID)
-	if req.CategoryID == "" {
+	onlyMissing := req.OnlyMissing || req.AllPages
+	if req.CategoryID == "" && !onlyMissing {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId is required"})
 	}
 
-	categoryOID, err := primitive.ObjectIDFromHex(req.CategoryID)
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId must be a valid ObjectID"})
+	timeout := 30 * time.Second
+	if req.AllPages {
+		timeout = 30 * time.Minute
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if !h.categoryLinker.IsCacheBuilt() {
-		if err := h.categoryLinker.BuildCache(ctx); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load categories: " + err.Error()})
+	var categoryOID primitive.ObjectID
+	var categoryPath []string
+	if req.CategoryID != "" {
+		if h.categoryLinker == nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "category linker not configured"})
 		}
-	}
+		parsedCategoryID, err := primitive.ObjectIDFromHex(req.CategoryID)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId must be a valid ObjectID"})
+		}
+		categoryOID = parsedCategoryID
 
-	categoryPath := h.categoryLinker.GetCategoryPath(categoryOID)
-	if len(categoryPath) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "selected main category not found"})
+		if !h.categoryLinker.IsCacheBuilt() {
+			if err := h.categoryLinker.BuildCache(ctx); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to load categories: " + err.Error()})
+			}
+		}
+
+		categoryPath = h.categoryLinker.GetCategoryPath(categoryOID)
+		if len(categoryPath) == 0 {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "selected main category not found"})
+		}
 	}
 
 	quantity := req.Quantity
@@ -406,7 +424,74 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 
 	mode := "group"
 	requestedCount := quantity
-	var products []models.EksmoProduct
+	scannedCount := 0
+	processedCount := 0
+	upserted := 0
+	modified := 0
+	skipped := 0
+	totalMatched := int64(0)
+	idsTrueAll := make(map[primitive.ObjectID]struct{})
+	idsFalseAll := make(map[primitive.ObjectID]struct{})
+
+	processBatch := func(batch []models.EksmoProduct) error {
+		if len(batch) == 0 {
+			return nil
+		}
+		scannedCount += len(batch)
+
+		targetProducts := batch
+		if onlyMissing {
+			flags, ferr := h.mainProductRepo.ExistsForEksmoProducts(ctx, batch)
+			if ferr != nil {
+				return ferr
+			}
+			if len(flags) != len(batch) {
+				return errors.New("failed to evaluate existing products")
+			}
+
+			missing := make([]models.EksmoProduct, 0, len(batch))
+			for i, product := range batch {
+				if flags[i] {
+					continue
+				}
+				missing = append(missing, product)
+			}
+			targetProducts = missing
+		}
+
+		processedCount += len(targetProducts)
+		if len(targetProducts) > 0 {
+			batchUpserted, batchModified, batchSkipped, uerr := h.mainProductRepo.UpsertFromEksmoProducts(ctx, targetProducts, categoryOID, categoryPath)
+			if uerr != nil {
+				return uerr
+			}
+			upserted += batchUpserted
+			modified += batchModified
+			skipped += batchSkipped
+		}
+
+		flags, ferr := h.mainProductRepo.ExistsForEksmoProducts(ctx, batch)
+		if ferr == nil && len(flags) == len(batch) {
+			idsTrue, idsFalse := splitProductIDsByFlags(batch, flags)
+			if req.AllPages {
+				for _, id := range idsTrue {
+					idsTrueAll[id] = struct{}{}
+					delete(idsFalseAll, id)
+				}
+				for _, id := range idsFalse {
+					if _, exists := idsTrueAll[id]; exists {
+						continue
+					}
+					idsFalseAll[id] = struct{}{}
+				}
+			} else {
+				_ = h.repo.SetInMainProductsByIDs(ctx, idsTrue, true)
+				_ = h.repo.SetInMainProductsByIDs(ctx, idsFalse, false)
+			}
+		}
+
+		return nil
+	}
 
 	if len(req.ProductIDs) > 0 {
 		mode = "selected"
@@ -427,8 +512,26 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "productIds must contain at least one valid ObjectID"})
 		}
 
-		products, err = h.repo.ListByIDs(ctx, ids)
+		products, err := h.repo.ListByIDs(ctx, ids)
 		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		totalMatched = int64(len(products))
+		if len(products) == 0 {
+			return c.JSON(fiber.Map{
+				"message":      "No products matched the request",
+				"mode":         mode,
+				"categoryId":   req.CategoryID,
+				"categoryPath": categoryPath,
+				"requested":    requestedCount,
+				"processed":    0,
+				"scanned":      0,
+				"copied":       0,
+				"onlyMissing":  onlyMissing,
+				"allPages":     req.AllPages,
+			})
+		}
+		if err := processBatch(products); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
 	} else {
@@ -466,59 +569,94 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 			params.NicheGUIDs = uniqueStrings(nicheGUIDs)
 		}
 
-		products, _, err = h.repo.ListWithFilters(ctx, params)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		if req.AllPages {
+			mode = "all"
+			params.Page = 1
+			for {
+				products, total, err := h.repo.ListWithFilters(ctx, params)
+				if err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				}
+				if params.Page == 1 {
+					totalMatched = total
+					requestedCount = int(total)
+				}
+				if len(products) == 0 {
+					break
+				}
+				if len(products) > quantity {
+					products = products[:quantity]
+				}
+				if err := processBatch(products); err != nil {
+					return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+				}
+				if params.Page*params.Limit >= total {
+					break
+				}
+				params.Page++
+			}
+		} else {
+			products, total, err := h.repo.ListWithFilters(ctx, params)
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			}
+			totalMatched = total
+			if len(products) > quantity {
+				products = products[:quantity]
+			}
+			if len(products) == 0 {
+				return c.JSON(fiber.Map{
+					"message":      "No products matched the request",
+					"mode":         mode,
+					"categoryId":   req.CategoryID,
+					"categoryPath": categoryPath,
+					"requested":    requestedCount,
+					"processed":    0,
+					"scanned":      0,
+					"copied":       0,
+					"onlyMissing":  onlyMissing,
+					"allPages":     req.AllPages,
+				})
+			}
+			if err := processBatch(products); err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			}
 		}
-
-		if len(products) > quantity {
-			products = products[:quantity]
-		}
 	}
 
-	if len(products) > 100 {
-		products = products[:100]
-	}
-	if len(products) == 0 {
-		return c.JSON(fiber.Map{
-			"message":      "No products matched the request",
-			"mode":         mode,
-			"categoryId":   req.CategoryID,
-			"categoryPath": categoryPath,
-			"requested":    requestedCount,
-			"processed":    0,
-			"copied":       0,
-		})
-	}
-
-	upserted, modified, skipped, err := h.mainProductRepo.UpsertFromEksmoProducts(ctx, products, categoryOID, categoryPath)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// Persist inMainProducts indicator into eksmo_products for this batch.
-	if len(products) > 0 {
-		flags, ferr := h.mainProductRepo.ExistsForEksmoProducts(ctx, products)
-		if ferr == nil && len(flags) == len(products) {
-			idsTrue, idsFalse := splitProductIDsByFlags(products, flags)
+	if req.AllPages {
+		idsTrue := mapObjectIDKeys(idsTrueAll)
+		idsFalse := mapObjectIDKeys(idsFalseAll)
+		if len(idsTrue) > 0 {
 			_ = h.repo.SetInMainProductsByIDs(ctx, idsTrue, true)
+		}
+		if len(idsFalse) > 0 {
 			_ = h.repo.SetInMainProductsByIDs(ctx, idsFalse, false)
 		}
 	}
 	h.invalidateProductCaches()
 
+	responseMessage := "Copied Eksmo products to main_products"
+	if onlyMissing {
+		responseMessage = "Copied missing Eksmo products to main_products"
+	}
+
 	return c.JSON(fiber.Map{
-		"message":      "Copied Eksmo products to main_products",
+		"message":      responseMessage,
 		"mode":         mode,
 		"categoryId":   req.CategoryID,
 		"categoryPath": categoryPath,
 		"requested":    requestedCount,
-		"processed":    len(products),
+		"matched":      totalMatched,
+		"scanned":      scannedCount,
+		"processed":    processedCount,
 		"copied":       upserted + modified,
 		"upserted":     upserted,
 		"modified":     modified,
 		"skipped":      skipped,
 		"maxQuantity":  100,
+		"onlyMissing":  onlyMissing,
+		"allPages":     req.AllPages,
 	})
 }
 
@@ -558,9 +696,10 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 	}
 
 	params := repository.MainProductFilterParams{
-		Page:   int64(parseIntQuery(c, "page", 1)),
-		Limit:  int64(parseIntQuery(c, "limit", 20)),
-		Search: strings.TrimSpace(c.Query("search")),
+		Page:            int64(parseIntQuery(c, "page", 1)),
+		Limit:           int64(parseIntQuery(c, "limit", 20)),
+		Search:          strings.TrimSpace(c.Query("search")),
+		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
 	}
 
 	if params.Limit > 200 {
@@ -576,6 +715,16 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 	params.CategoryIDs = h.expandCategoryFilters(categoryIDs)
 	if len(params.CategoryIDs) == 0 && len(categoryIDs) == 1 {
 		params.CategoryID = categoryIDs[0]
+	}
+	sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(c.Query("sourceCategoryKeys"))
+	params.SourceCategoryPaths = sourceCategoryPaths
+	params.OtherCategoryPaths = otherCategoryPaths
+	params.SourceDomains = sourceDomains
+	if includeWithoutCategory {
+		params.WithoutCategory = true
+	}
+	if includeEksmo {
+		params.IncludeEksmoSources = true
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -634,6 +783,39 @@ func (h *EksmoProductHandler) SyncMainProductsFromBillz(c *fiber.Ctx) error {
 type DeleteMainProductsRequest struct {
 	ProductIDs []string `json:"productIds"`
 }
+
+type LinkMainProductsCategoryRequest struct {
+	ProductIDs         []string `json:"productIds"`
+	CategoryID         string   `json:"categoryId"`
+	Search             string   `json:"search"`
+	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
+	WithoutCategory    bool     `json:"withoutCategory"`
+	ApplyToFiltered    bool     `json:"applyToFiltered"`
+}
+
+type UnlinkMainProductsCategoryRequest struct {
+	ProductIDs         []string `json:"productIds"`
+	Search             string   `json:"search"`
+	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
+	WithoutCategory    bool     `json:"withoutCategory"`
+	ApplyToFiltered    bool     `json:"applyToFiltered"`
+}
+
+type MainProductSourceCategoryNode struct {
+	ID       string                           `json:"id"`
+	Name     string                           `json:"name"`
+	Path     []string                         `json:"path"`
+	Children []*MainProductSourceCategoryNode `json:"children,omitempty"`
+}
+
+const (
+	mainProductSourceCategoryKeyPathPrefix      = "path:"
+	mainProductSourceCategoryKeyOtherPathPrefix = "otherPath:"
+	mainProductSourceCategoryKeyDomainPrefix    = "domain:"
+	mainProductSourceCategoryKeyOther           = "other"
+	mainProductSourceCategoryKeyEksmo           = "group:eksmo"
+	mainProductSourceCategoryKeyDomains         = "group:domains"
+)
 
 type DeleteEksmoProductsRequest struct {
 	ProductIDs []string `json:"productIds"`
@@ -824,6 +1006,244 @@ func (h *EksmoProductHandler) DeleteMainProduct(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"message": "Product removed from main_products",
 		"id":      idStr,
+	})
+}
+
+func (h *EksmoProductHandler) GetMainProductsSourceCategories(c *fiber.Ctx) error {
+	if h.mainProductRepo == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	paths, err := h.mainProductRepo.ListSourceCategoryPaths(ctx)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	otherPaths, err := h.mainProductRepo.ListUncategorizedCategoryHints(ctx)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	visiblePaths := make([][]string, 0, len(paths))
+	for _, path := range paths {
+		if shouldHideMainSourceCategoryPath(path) {
+			continue
+		}
+		visiblePaths = append(visiblePaths, path)
+	}
+	nodes := buildMainProductSourceCategoryTree(visiblePaths, mainProductSourceCategoryKeyPathPrefix)
+	otherChildren := buildMainProductSourceCategoryTree(otherPaths, mainProductSourceCategoryKeyOtherPathPrefix)
+	otherNode := &MainProductSourceCategoryNode{
+		ID:       mainProductSourceCategoryKeyOther,
+		Name:     "Other",
+		Path:     []string{"Other"},
+		Children: otherChildren,
+	}
+	grouped := make([]*MainProductSourceCategoryNode, 0, len(nodes)+2)
+	grouped = append(grouped, otherNode)
+	grouped = append(grouped, nodes...)
+
+	return c.JSON(fiber.Map{
+		"collection": "main_products_source_categories",
+		"data":       grouped,
+	})
+}
+
+func (h *EksmoProductHandler) LinkMainProductsCategory(c *fiber.Ctx) error {
+	if h.mainProductRepo == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
+	}
+
+	var req LinkMainProductsCategoryRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	categoryIDStr := strings.TrimSpace(req.CategoryID)
+	if categoryIDStr == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId is required"})
+	}
+	categoryOID, err := primitive.ObjectIDFromHex(categoryIDStr)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId must be a valid ObjectID"})
+	}
+
+	var categoryPath []string
+	if h.categoryLinker != nil {
+		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = h.categoryLinker.BuildCache(cacheCtx)
+		cacheCancel()
+		categoryPath = h.categoryLinker.GetCategoryPath(categoryOID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if req.ApplyToFiltered {
+		params := repository.MainProductFilterParams{
+			Search:          strings.TrimSpace(req.Search),
+			WithoutCategory: req.WithoutCategory,
+		}
+		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
+		params.SourceCategoryPaths = sourceCategoryPaths
+		params.OtherCategoryPaths = otherCategoryPaths
+		params.SourceDomains = sourceDomains
+		if includeWithoutCategory {
+			params.WithoutCategory = true
+		}
+		if includeEksmo {
+			params.IncludeEksmoSources = true
+		}
+
+		matched, modified, err := h.mainProductRepo.AssignCategoryByFilter(ctx, params, categoryOID, categoryPath)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		h.invalidateProductCaches()
+
+		return c.JSON(fiber.Map{
+			"message":      "Filtered main products linked to category",
+			"mode":         "filtered",
+			"linked":       matched,
+			"modified":     modified,
+			"categoryId":   categoryIDStr,
+			"categoryPath": categoryPath,
+		})
+	}
+
+	req.ProductIDs = cleanStringSlice(req.ProductIDs)
+	if len(req.ProductIDs) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "productIds must contain at least one id"})
+	}
+	if len(req.ProductIDs) > 100 {
+		req.ProductIDs = req.ProductIDs[:100]
+	}
+
+	ids := make([]primitive.ObjectID, 0, len(req.ProductIDs))
+	invalid := 0
+	for _, rawID := range req.ProductIDs {
+		oid, parseErr := primitive.ObjectIDFromHex(rawID)
+		if parseErr != nil {
+			invalid++
+			continue
+		}
+		ids = append(ids, oid)
+	}
+	if len(ids) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no valid product ids provided", "invalid": invalid})
+	}
+
+	matched, modified, err := h.mainProductRepo.AssignCategoryByIDs(ctx, ids, categoryOID, categoryPath)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.invalidateProductCaches()
+
+	notFound := len(ids) - int(matched)
+	if notFound < 0 {
+		notFound = 0
+	}
+
+	return c.JSON(fiber.Map{
+		"message":      "Main products linked to category",
+		"mode":         "selected",
+		"requested":    len(req.ProductIDs),
+		"valid":        len(ids),
+		"linked":       matched,
+		"modified":     modified,
+		"notFound":     notFound,
+		"invalid":      invalid,
+		"categoryId":   categoryIDStr,
+		"categoryPath": categoryPath,
+	})
+}
+
+func (h *EksmoProductHandler) UnlinkMainProductsCategory(c *fiber.Ctx) error {
+	if h.mainProductRepo == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
+	}
+
+	var req UnlinkMainProductsCategoryRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if req.ApplyToFiltered {
+		params := repository.MainProductFilterParams{
+			Search:          strings.TrimSpace(req.Search),
+			WithoutCategory: req.WithoutCategory,
+		}
+		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
+		params.SourceCategoryPaths = sourceCategoryPaths
+		params.OtherCategoryPaths = otherCategoryPaths
+		params.SourceDomains = sourceDomains
+		if includeWithoutCategory {
+			params.WithoutCategory = true
+		}
+		if includeEksmo {
+			params.IncludeEksmoSources = true
+		}
+
+		matched, modified, err := h.mainProductRepo.RemoveCategoryByFilter(ctx, params)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		h.invalidateProductCaches()
+
+		return c.JSON(fiber.Map{
+			"message":  "Filtered main products unlinked from category",
+			"mode":     "filtered",
+			"unlinked": matched,
+			"modified": modified,
+		})
+	}
+
+	req.ProductIDs = cleanStringSlice(req.ProductIDs)
+	if len(req.ProductIDs) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "productIds must contain at least one id"})
+	}
+	if len(req.ProductIDs) > 100 {
+		req.ProductIDs = req.ProductIDs[:100]
+	}
+
+	ids := make([]primitive.ObjectID, 0, len(req.ProductIDs))
+	invalid := 0
+	for _, rawID := range req.ProductIDs {
+		oid, parseErr := primitive.ObjectIDFromHex(rawID)
+		if parseErr != nil {
+			invalid++
+			continue
+		}
+		ids = append(ids, oid)
+	}
+	if len(ids) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no valid product ids provided", "invalid": invalid})
+	}
+
+	matched, modified, err := h.mainProductRepo.RemoveCategoryByIDs(ctx, ids)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	h.invalidateProductCaches()
+
+	notFound := len(ids) - int(matched)
+	if notFound < 0 {
+		notFound = 0
+	}
+
+	return c.JSON(fiber.Map{
+		"message":   "Main products unlinked from category",
+		"mode":      "selected",
+		"requested": len(req.ProductIDs),
+		"valid":     len(ids),
+		"unlinked":  matched,
+		"modified":  modified,
+		"notFound":  notFound,
+		"invalid":   invalid,
 	})
 }
 
@@ -1436,6 +1856,215 @@ func parseObjectIDsCSV(raw string) []primitive.ObjectID {
 	return result
 }
 
+func parseMainProductSourceCategoryFilter(raw string) (sourcePaths [][]string, otherPaths [][]string, sourceDomains []string, includeWithoutCategory bool, includeEksmo bool) {
+	values := cleanStringSlice(splitAndTrim(raw, ","))
+	if len(values) == 0 {
+		return nil, nil, nil, false, false
+	}
+
+	seenSource := make(map[string]struct{}, len(values))
+	seenOther := make(map[string]struct{}, len(values))
+	seenDomains := make(map[string]struct{}, len(values))
+	sourceResult := make([][]string, 0, len(values))
+	otherResult := make([][]string, 0, len(values))
+	sourceDomainResult := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == mainProductSourceCategoryKeyOther {
+			includeWithoutCategory = true
+			continue
+		}
+		if value == mainProductSourceCategoryKeyEksmo {
+			includeEksmo = true
+			continue
+		}
+		if strings.HasPrefix(value, mainProductSourceCategoryKeyDomainPrefix) {
+			encodedValue := strings.TrimPrefix(value, mainProductSourceCategoryKeyDomainPrefix)
+			decoded, err := base64.RawURLEncoding.DecodeString(encodedValue)
+			if err != nil {
+				continue
+			}
+			path := cleanStringSlice(strings.Split(string(decoded), "\x1f"))
+			if len(path) == 0 {
+				continue
+			}
+			domain := strings.TrimSpace(strings.ToLower(path[0]))
+			if domain == "" {
+				continue
+			}
+			if _, exists := seenDomains[domain]; exists {
+				continue
+			}
+			seenDomains[domain] = struct{}{}
+			sourceDomainResult = append(sourceDomainResult, domain)
+			continue
+		}
+
+		targetSeen := seenSource
+		targetResult := &sourceResult
+		encodedValue := value
+		switch {
+		case strings.HasPrefix(value, mainProductSourceCategoryKeyOtherPathPrefix):
+			targetSeen = seenOther
+			targetResult = &otherResult
+			encodedValue = strings.TrimPrefix(value, mainProductSourceCategoryKeyOtherPathPrefix)
+		case strings.HasPrefix(value, mainProductSourceCategoryKeyPathPrefix):
+			encodedValue = strings.TrimPrefix(value, mainProductSourceCategoryKeyPathPrefix)
+		}
+
+		decoded, err := base64.RawURLEncoding.DecodeString(encodedValue)
+		if err != nil {
+			continue
+		}
+		path := cleanStringSlice(strings.Split(string(decoded), "\x1f"))
+		if len(path) == 0 {
+			continue
+		}
+		key := strings.Join(path, "\x1f")
+		if _, exists := targetSeen[key]; exists {
+			continue
+		}
+		targetSeen[key] = struct{}{}
+		*targetResult = append(*targetResult, path)
+	}
+	if len(sourceResult) == 0 {
+		sourceResult = nil
+	}
+	if len(otherResult) == 0 {
+		otherResult = nil
+	}
+	if len(sourceDomainResult) == 0 {
+		sourceDomainResult = nil
+	}
+	return sourceResult, otherResult, sourceDomainResult, includeWithoutCategory, includeEksmo
+}
+
+func isLikelyEksmoSourceCategoryPath(path []string) bool {
+	normalized := cleanStringSlice(path)
+	if len(normalized) == 0 {
+		return false
+	}
+
+	first := strings.TrimSpace(strings.ToLower(normalized[0]))
+	if first == "" || first == "без категории" {
+		return false
+	}
+	// Host-like roots are usually external source domains.
+	if looksLikeSourceHost(first) {
+		return false
+	}
+	return true
+}
+
+func shouldHideMainSourceCategoryPath(path []string) bool {
+	_ = path
+	return false
+}
+
+func looksLikeSourceHost(value string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return false
+	}
+	if strings.ContainsAny(trimmed, " /\\\t\n\r") {
+		return false
+	}
+	hostPattern := regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+	return hostPattern.MatchString(trimmed)
+}
+
+func encodeMainProductSourceCategoryPath(path []string, prefix string) string {
+	if len(path) == 0 {
+		return ""
+	}
+	return prefix + base64.RawURLEncoding.EncodeToString([]byte(strings.Join(path, "\x1f")))
+}
+
+func displayMainProductSourceCategorySegment(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		parsed, err := url.Parse(trimmed)
+		if err == nil {
+			host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+			if host != "" {
+				return host
+			}
+		}
+	}
+	return trimmed
+}
+
+func buildMainProductSourceCategoryTree(paths [][]string, idPrefix string) []*MainProductSourceCategoryNode {
+	type treeBuilderNode struct {
+		node     *MainProductSourceCategoryNode
+		children map[string]*treeBuilderNode
+	}
+
+	root := &treeBuilderNode{children: map[string]*treeBuilderNode{}}
+	for _, rawPath := range paths {
+		path := cleanStringSlice(rawPath)
+		if len(path) == 0 {
+			continue
+		}
+		current := root
+		for depth, segment := range path {
+			key := strings.TrimSpace(segment)
+			if key == "" {
+				continue
+			}
+			next, exists := current.children[key]
+			if !exists {
+				nodePath := append([]string{}, path[:depth+1]...)
+				next = &treeBuilderNode{
+					node: &MainProductSourceCategoryNode{
+						ID:   encodeMainProductSourceCategoryPath(nodePath, idPrefix),
+						Name: displayMainProductSourceCategorySegment(key),
+						Path: nodePath,
+					},
+					children: map[string]*treeBuilderNode{},
+				}
+				current.children[key] = next
+			}
+			current = next
+		}
+	}
+
+	var toList func(node *treeBuilderNode) []*MainProductSourceCategoryNode
+	toList = func(node *treeBuilderNode) []*MainProductSourceCategoryNode {
+		if len(node.children) == 0 {
+			return nil
+		}
+		keys := make([]string, 0, len(node.children))
+		for key := range node.children {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			return strings.ToLower(keys[i]) < strings.ToLower(keys[j])
+		})
+
+		result := make([]*MainProductSourceCategoryNode, 0, len(keys))
+		for _, key := range keys {
+			child := node.children[key]
+			if child.node == nil {
+				continue
+			}
+			item := &MainProductSourceCategoryNode{
+				ID:   child.node.ID,
+				Name: child.node.Name,
+				Path: append([]string{}, child.node.Path...),
+			}
+			item.Children = toList(child)
+			result = append(result, item)
+		}
+		return result
+	}
+
+	return toList(root)
+}
+
 func (h *EksmoProductHandler) expandCategoryFilters(categoryIDs []primitive.ObjectID) []primitive.ObjectID {
 	if len(categoryIDs) == 0 {
 		return nil
@@ -1528,4 +2157,15 @@ func splitProductIDsByFlags(products []models.EksmoProduct, flags []bool) ([]pri
 	}
 
 	return idsTrue, idsFalse
+}
+
+func mapObjectIDKeys(source map[primitive.ObjectID]struct{}) []primitive.ObjectID {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make([]primitive.ObjectID, 0, len(source))
+	for key := range source {
+		result = append(result, key)
+	}
+	return result
 }

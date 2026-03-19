@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -70,13 +71,11 @@ func (r *MainProductRepository) UpsertFromEksmoProducts(
 	if len(products) == 0 {
 		return 0, 0, 0, nil
 	}
-	if categoryID.IsZero() {
-		return 0, 0, 0, errors.New("categoryId is required")
-	}
 
 	now := time.Now().UTC()
 	operations := make([]mongo.WriteModel, 0, len(products))
 	seen := make(map[string]struct{}, len(products))
+	fallbackCategoryPath := sanitizeStringSlice(categoryPath)
 
 	for _, p := range products {
 		filter, ferr := buildMainProductSourceFilter(p)
@@ -96,6 +95,12 @@ func (r *MainProductRepository) UpsertFromEksmoProducts(
 		}
 		seen[key] = struct{}{}
 
+		resolvedCategoryID := categoryID
+		resolvedCategoryPath := fallbackCategoryPath
+		if resolvedCategoryID.IsZero() {
+			resolvedCategoryID, resolvedCategoryPath = defaultMainCategoryFromEksmoProduct(p)
+		}
+
 		doc := models.MainProduct{
 			SourceProductID: p.ID,
 			SourceGUID:      p.GUID,
@@ -106,16 +111,25 @@ func (r *MainProductRepository) UpsertFromEksmoProducts(
 			Name:            p.Name,
 			AuthorCover:     p.AuthorCover,
 			AuthorNames:     p.AuthorNames,
+			AuthorRefs:      p.AuthorRefs,
+			TagRefs:         p.TagRefs,
+			GenreRefs:       p.GenreRefs,
+			TagNames:        p.TagNames,
+			GenreNames:      p.GenreNames,
 			Annotation:      p.Annotation,
 			CoverURL:        p.CoverURL,
+			Pages:           p.Pages,
+			Format:          p.Format,
+			PaperType:       p.PaperType,
+			BindingType:     p.BindingType,
 			AgeRestriction:  p.AgeRestriction,
 			SubjectName:     productSubjectName(p),
 			NicheName:       productNicheName(p),
 			BrandName:       productBrandName(p),
 			SeriesName:      productSeriesName(p),
 			PublisherName:   productPublisherName(p),
-			CategoryID:      categoryID,
-			CategoryPath:    append([]string{}, categoryPath...),
+			CategoryID:      resolvedCategoryID,
+			CategoryPath:    append([]string{}, resolvedCategoryPath...),
 			UpdatedAt:       now,
 		}
 		if price, ok := extractEksmoPrice(p.Raw); ok {
@@ -211,12 +225,29 @@ func productPublisherName(product models.EksmoProduct) string {
 	return product.PublisherName
 }
 
+func defaultMainCategoryFromEksmoProduct(product models.EksmoProduct) (primitive.ObjectID, []string) {
+	var categoryID primitive.ObjectID
+	for index := len(product.CategoryIDs) - 1; index >= 0; index-- {
+		if product.CategoryIDs[index].IsZero() {
+			continue
+		}
+		categoryID = product.CategoryIDs[index]
+		break
+	}
+	return categoryID, sanitizeStringSlice(product.CategoryPath)
+}
+
 type MainProductFilterParams struct {
-	Page        int64
-	Limit       int64
-	Search      string
-	CategoryID  primitive.ObjectID
-	CategoryIDs []primitive.ObjectID
+	Page                int64
+	Limit               int64
+	Search              string
+	CategoryID          primitive.ObjectID
+	CategoryIDs         []primitive.ObjectID
+	WithoutCategory     bool
+	IncludeEksmoSources bool
+	SourceDomains       []string
+	SourceCategoryPaths [][]string
+	OtherCategoryPaths  [][]string
 }
 
 type MainProductBillzSyncCandidate struct {
@@ -286,6 +317,222 @@ func (r *MainProductRepository) ListAllWithFilters(ctx context.Context, params M
 		return nil, err
 	}
 	return products, nil
+}
+
+func (r *MainProductRepository) ListSourceCategoryPaths(ctx context.Context) ([][]string, error) {
+	type categoryDoc struct {
+		CategoryPath  []string          `bson:"categoryPath"`
+		SubjectName   string            `bson:"subjectName"`
+		NicheName     string            `bson:"nicheName"`
+		SourceGUIDNOM string            `bson:"sourceGuidNom"`
+		SourceGUID    string            `bson:"sourceGuid"`
+		CoverURL      string            `bson:"coverUrl"`
+		Covers        map[string]string `bson:"covers"`
+	}
+
+	cursor, err := r.collection.Find(
+		ctx,
+		bson.M{},
+		options.Find().SetProjection(bson.M{
+			"_id":           0,
+			"categoryPath":  1,
+			"subjectName":   1,
+			"nicheName":     1,
+			"sourceGuidNom": 1,
+			"sourceGuid":    1,
+			"coverUrl":      1,
+			"covers":        1,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	pathsByKey := make(map[string][]string)
+	for cursor.Next(ctx) {
+		var doc categoryDoc
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+
+		path := mainProductSourceCategoryPath(
+			doc.CategoryPath,
+			doc.SubjectName,
+			doc.NicheName,
+			doc.SourceGUIDNOM,
+			doc.SourceGUID,
+			doc.CoverURL,
+			doc.Covers,
+		)
+		if len(path) == 0 {
+			continue
+		}
+
+		key := strings.Join(path, "\x1f")
+		if _, exists := pathsByKey[key]; exists {
+			continue
+		}
+		pathsByKey[key] = path
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(pathsByKey))
+	for key := range pathsByKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make([][]string, 0, len(keys))
+	for _, key := range keys {
+		path := pathsByKey[key]
+		nextPath := make([]string, len(path))
+		copy(nextPath, path)
+		result = append(result, nextPath)
+	}
+	return result, nil
+}
+
+func (r *MainProductRepository) ListUncategorizedCategoryHints(ctx context.Context) ([][]string, error) {
+	type categoryDoc struct {
+		CategoryPath  []string          `bson:"categoryPath"`
+		SubjectName   string            `bson:"subjectName"`
+		NicheName     string            `bson:"nicheName"`
+		SourceGUIDNOM string            `bson:"sourceGuidNom"`
+		SourceGUID    string            `bson:"sourceGuid"`
+		CoverURL      string            `bson:"coverUrl"`
+		Covers        map[string]string `bson:"covers"`
+	}
+
+	cursor, err := r.collection.Find(
+		ctx,
+		mainProductWithoutCategoryClause(),
+		options.Find().SetProjection(bson.M{
+			"_id":           0,
+			"categoryPath":  1,
+			"subjectName":   1,
+			"nicheName":     1,
+			"sourceGuidNom": 1,
+			"sourceGuid":    1,
+			"coverUrl":      1,
+			"covers":        1,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	pathsByKey := make(map[string][]string)
+	for cursor.Next(ctx) {
+		var doc categoryDoc
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+
+		path := mainProductSourceCategoryPath(
+			doc.CategoryPath,
+			doc.SubjectName,
+			doc.NicheName,
+			doc.SourceGUIDNOM,
+			doc.SourceGUID,
+			doc.CoverURL,
+			doc.Covers,
+		)
+		if len(path) == 0 {
+			path = []string{"Без категории"}
+		}
+
+		key := strings.Join(path, "\x1f")
+		if _, exists := pathsByKey[key]; exists {
+			continue
+		}
+		pathsByKey[key] = path
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	keys := make([]string, 0, len(pathsByKey))
+	for key := range pathsByKey {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	result := make([][]string, 0, len(keys))
+	for _, key := range keys {
+		path := pathsByKey[key]
+		nextPath := make([]string, len(path))
+		copy(nextPath, path)
+		result = append(result, nextPath)
+	}
+	return result, nil
+}
+
+func (r *MainProductRepository) ListSourceDomains(ctx context.Context) ([]string, error) {
+	type domainDoc struct {
+		SourceGUIDNOM string            `bson:"sourceGuidNom"`
+		SourceGUID    string            `bson:"sourceGuid"`
+		CoverURL      string            `bson:"coverUrl"`
+		Covers        map[string]string `bson:"covers"`
+	}
+
+	cursor, err := r.collection.Find(
+		ctx,
+		bson.M{},
+		options.Find().SetProjection(bson.M{
+			"_id":           0,
+			"sourceGuidNom": 1,
+			"sourceGuid":    1,
+			"coverUrl":      1,
+			"covers":        1,
+		}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	domains := make(map[string]struct{})
+	for cursor.Next(ctx) {
+		var doc domainDoc
+		if err := cursor.Decode(&doc); err != nil {
+			continue
+		}
+
+		candidates := []string{
+			doc.SourceGUIDNOM,
+			doc.SourceGUID,
+			doc.CoverURL,
+		}
+		for _, raw := range candidates {
+			domain := extractMainProductDomain(raw)
+			if domain == "" {
+				continue
+			}
+			domains[domain] = struct{}{}
+		}
+
+		for _, raw := range doc.Covers {
+			domain := extractMainProductDomain(raw)
+			if domain == "" {
+				continue
+			}
+			domains[domain] = struct{}{}
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	result := make([]string, 0, len(domains))
+	for domain := range domains {
+		result = append(result, domain)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func (r *MainProductRepository) ListBillzSyncCandidates(ctx context.Context) ([]MainProductBillzSyncCandidate, error) {
@@ -411,6 +658,23 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	setOrUnsetString("isbnNormalized", doc.ISBNNormalized)
 	setOrUnsetString("authorCover", doc.AuthorCover)
 	setOrUnsetSlice("authorNames", doc.AuthorNames)
+	if len(doc.AuthorRefs) == 0 {
+		unsetDoc["authorRefs"] = ""
+	} else {
+		setDoc["authorRefs"] = doc.AuthorRefs
+	}
+	if len(doc.TagRefs) == 0 {
+		unsetDoc["tagRefs"] = ""
+	} else {
+		setDoc["tagRefs"] = doc.TagRefs
+	}
+	if len(doc.GenreRefs) == 0 {
+		unsetDoc["genreRefs"] = ""
+	} else {
+		setDoc["genreRefs"] = doc.GenreRefs
+	}
+	setOrUnsetSlice("tagNames", doc.TagNames)
+	setOrUnsetSlice("genreNames", doc.GenreNames)
 	setOrUnsetString("annotation", doc.Annotation)
 	setOrUnsetString("coverUrl", doc.CoverURL)
 	if len(doc.Covers) == 0 {
@@ -418,6 +682,14 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	} else {
 		setDoc["covers"] = doc.Covers
 	}
+	if doc.Pages <= 0 {
+		unsetDoc["pages"] = ""
+	} else {
+		setDoc["pages"] = doc.Pages
+	}
+	setOrUnsetString("format", doc.Format)
+	setOrUnsetString("paperType", doc.PaperType)
+	setOrUnsetString("bindingType", doc.BindingType)
 	setOrUnsetString("ageRestriction", doc.AgeRestriction)
 	setOrUnsetString("subjectName", doc.SubjectName)
 	setOrUnsetString("nicheName", doc.NicheName)
@@ -591,6 +863,115 @@ func (r *MainProductRepository) RemoveCategoryByID(ctx context.Context, id primi
 	return result.MatchedCount > 0, nil
 }
 
+func (r *MainProductRepository) RemoveCategoryByIDs(
+	ctx context.Context,
+	ids []primitive.ObjectID,
+) (matched int64, modified int64, err error) {
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+
+	update := bson.M{
+		"$unset": bson.M{
+			"categoryId":   "",
+			"categoryPath": "",
+		},
+		"$set": bson.M{
+			"updatedAt": time.Now().UTC(),
+		},
+	}
+
+	result, err := r.collection.UpdateMany(
+		ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		update,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
+func (r *MainProductRepository) RemoveCategoryByFilter(
+	ctx context.Context,
+	params MainProductFilterParams,
+) (matched int64, modified int64, err error) {
+	filter := buildMainProductFilter(params)
+	update := bson.M{
+		"$unset": bson.M{
+			"categoryId":   "",
+			"categoryPath": "",
+		},
+		"$set": bson.M{
+			"updatedAt": time.Now().UTC(),
+		},
+	}
+
+	result, err := r.collection.UpdateMany(ctx, filter, update)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
+func (r *MainProductRepository) AssignCategoryByIDs(
+	ctx context.Context,
+	ids []primitive.ObjectID,
+	categoryID primitive.ObjectID,
+	categoryPath []string,
+) (matched int64, modified int64, err error) {
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+	if categoryID.IsZero() {
+		return 0, 0, errors.New("categoryId is required")
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"categoryId":   categoryID,
+			"categoryPath": sanitizeStringSlice(categoryPath),
+			"updatedAt":    time.Now().UTC(),
+		},
+	}
+
+	result, err := r.collection.UpdateMany(
+		ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		update,
+	)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
+func (r *MainProductRepository) AssignCategoryByFilter(
+	ctx context.Context,
+	params MainProductFilterParams,
+	categoryID primitive.ObjectID,
+	categoryPath []string,
+) (matched int64, modified int64, err error) {
+	if categoryID.IsZero() {
+		return 0, 0, errors.New("categoryId is required")
+	}
+
+	filter := buildMainProductFilter(params)
+	update := bson.M{
+		"$set": bson.M{
+			"categoryId":   categoryID,
+			"categoryPath": sanitizeStringSlice(categoryPath),
+			"updatedAt":    time.Now().UTC(),
+		},
+	}
+
+	result, err := r.collection.UpdateMany(ctx, filter, update)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
 func (r *MainProductRepository) ExistsBySource(ctx context.Context, guidNom, guid, nomcode string) (bool, error) {
 	filter := bson.M{}
 	switch {
@@ -744,6 +1125,17 @@ func objectIDSetKeys(source map[primitive.ObjectID]struct{}) []primitive.ObjectI
 	return keys
 }
 
+func stringSliceToBsonArray(values []string) bson.A {
+	if len(values) == 0 {
+		return bson.A{}
+	}
+	result := make(bson.A, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+	return result
+}
+
 func normalizeBillzISBN(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -766,26 +1158,607 @@ func normalizeBillzISBN(value string) string {
 }
 
 func buildMainProductFilter(params MainProductFilterParams) bson.M {
-	filter := bson.M{}
-
+	clauses := make([]bson.M, 0, 2)
 	if params.Search != "" {
 		search := regexp.QuoteMeta(params.Search)
-		filter["$or"] = []bson.M{
-			{"name": bson.M{"$regex": search, "$options": "i"}},
-			{"isbn": bson.M{"$regex": search, "$options": "i"}},
-			{"authorCover": bson.M{"$regex": search, "$options": "i"}},
-			{"authorNames": bson.M{"$regex": search, "$options": "i"}},
-			{"sourceGuidNom": bson.M{"$regex": search, "$options": "i"}},
+		clauses = append(clauses, bson.M{
+			"$or": []bson.M{
+				{"name": bson.M{"$regex": search, "$options": "i"}},
+				{"isbn": bson.M{"$regex": search, "$options": "i"}},
+				{"authorCover": bson.M{"$regex": search, "$options": "i"}},
+				{"authorNames": bson.M{"$regex": search, "$options": "i"}},
+				{"sourceGuidNom": bson.M{"$regex": search, "$options": "i"}},
+			},
+		})
+	}
+
+	categoryClauses := make([]bson.M, 0, 2)
+	if len(params.CategoryIDs) > 0 {
+		categoryClauses = append(categoryClauses, bson.M{"categoryId": bson.M{"$in": params.CategoryIDs}})
+	} else if !params.CategoryID.IsZero() {
+		categoryClauses = append(categoryClauses, bson.M{"categoryId": params.CategoryID})
+	}
+	if params.WithoutCategory {
+		categoryClauses = append(categoryClauses, mainProductWithoutCategoryClause())
+	}
+	if params.IncludeEksmoSources {
+		categoryClauses = append(categoryClauses, mainProductLikelyEksmoClause())
+	}
+	if len(params.SourceDomains) > 0 {
+		sourceDomainClauses := make([]bson.M, 0, len(params.SourceDomains))
+		for _, sourceDomain := range params.SourceDomains {
+			clause := mainProductSourceDomainClause(sourceDomain)
+			if len(clause) == 0 {
+				continue
+			}
+			sourceDomainClauses = append(sourceDomainClauses, clause)
+		}
+		if len(sourceDomainClauses) == 1 {
+			categoryClauses = append(categoryClauses, sourceDomainClauses[0])
+		} else if len(sourceDomainClauses) > 1 {
+			categoryClauses = append(categoryClauses, bson.M{"$or": sourceDomainClauses})
+		}
+	}
+	if len(params.SourceCategoryPaths) > 0 {
+		sourcePathClauses := make([]bson.M, 0, len(params.SourceCategoryPaths))
+		for _, sourcePath := range params.SourceCategoryPaths {
+			path := sanitizeStringSlice(sourcePath)
+			if len(path) == 0 {
+				continue
+			}
+			if looksLikeMainProductHost(path[0]) {
+				domainClause := mainProductSourceDomainClause(path[0])
+				if len(domainClause) == 0 {
+					continue
+				}
+				if len(path) == 1 {
+					sourcePathClauses = append(sourcePathClauses, domainClause)
+					continue
+				}
+
+				suffix := sanitizeStringSlice(path[1:])
+				if len(suffix) == 0 {
+					sourcePathClauses = append(sourcePathClauses, domainClause)
+					continue
+				}
+
+				sourcePathClauses = append(sourcePathClauses, bson.M{
+					"$and": []bson.M{
+						domainClause,
+						bson.M{
+							"$expr": bson.M{
+								"$eq": bson.A{
+									bson.M{
+										"$slice": bson.A{
+											mainProductSourceCategoryPathExpr(),
+											len(suffix),
+										},
+									},
+									stringSliceToBsonArray(suffix),
+								},
+							},
+						},
+					},
+				})
+				continue
+			}
+
+			regexPattern := buildMainProductCoverURLPathRegex(path)
+			if regexPattern != "" {
+				sourcePathClauses = append(sourcePathClauses, bson.M{
+					"coverUrl": bson.M{
+						"$regex":   regexPattern,
+						"$options": "i",
+					},
+				})
+				continue
+			}
+
+			exprClause := bson.M{
+				"$expr": bson.M{
+					"$eq": bson.A{
+						bson.M{
+							"$slice": bson.A{
+								mainProductSourceCategoryPathExpr(),
+								len(path),
+							},
+						},
+						stringSliceToBsonArray(path),
+					},
+				},
+			}
+			sourcePathClauses = append(sourcePathClauses, exprClause)
+		}
+
+		if len(sourcePathClauses) == 1 {
+			categoryClauses = append(categoryClauses, sourcePathClauses[0])
+		} else if len(sourcePathClauses) > 1 {
+			categoryClauses = append(categoryClauses, bson.M{"$or": sourcePathClauses})
+		}
+	}
+	if len(params.OtherCategoryPaths) > 0 {
+		otherPathClauses := make([]bson.M, 0, len(params.OtherCategoryPaths))
+		for _, otherPath := range params.OtherCategoryPaths {
+			path := sanitizeStringSlice(otherPath)
+			if len(path) == 0 {
+				continue
+			}
+			if looksLikeMainProductHost(path[0]) {
+				domainClause := mainProductSourceDomainClause(path[0])
+				if len(domainClause) == 0 {
+					continue
+				}
+				if len(path) == 1 {
+					otherPathClauses = append(otherPathClauses, bson.M{
+						"$and": []bson.M{
+							mainProductWithoutCategoryClause(),
+							domainClause,
+						},
+					})
+					continue
+				}
+
+				suffix := sanitizeStringSlice(path[1:])
+				if len(suffix) == 0 {
+					otherPathClauses = append(otherPathClauses, bson.M{
+						"$and": []bson.M{
+							mainProductWithoutCategoryClause(),
+							domainClause,
+						},
+					})
+					continue
+				}
+
+				otherPathClauses = append(otherPathClauses, bson.M{
+					"$and": []bson.M{
+						mainProductWithoutCategoryClause(),
+						domainClause,
+						{
+							"$expr": bson.M{
+								"$eq": bson.A{
+									bson.M{
+										"$slice": bson.A{
+											mainProductOtherCategoryPathExpr(),
+											len(suffix),
+										},
+									},
+									stringSliceToBsonArray(suffix),
+								},
+							},
+						},
+					},
+				})
+				continue
+			}
+			regexPattern := buildMainProductCoverURLPathRegex(path)
+			if regexPattern != "" {
+				otherPathClauses = append(otherPathClauses, bson.M{
+					"$and": []bson.M{
+						mainProductWithoutCategoryClause(),
+						bson.M{
+							"coverUrl": bson.M{
+								"$regex":   regexPattern,
+								"$options": "i",
+							},
+						},
+					},
+				})
+				continue
+			}
+
+			exprClause := bson.M{
+				"$expr": bson.M{
+					"$eq": bson.A{
+						bson.M{
+							"$slice": bson.A{
+								mainProductOtherCategoryPathExpr(),
+								len(path),
+							},
+						},
+						stringSliceToBsonArray(path),
+					},
+				},
+			}
+			otherPathClauses = append(otherPathClauses, bson.M{
+				"$and": []bson.M{
+					mainProductWithoutCategoryClause(),
+					exprClause,
+				},
+			})
+		}
+
+		if len(otherPathClauses) == 1 {
+			categoryClauses = append(categoryClauses, otherPathClauses[0])
+		} else if len(otherPathClauses) > 1 {
+			categoryClauses = append(categoryClauses, bson.M{"$or": otherPathClauses})
+		}
+	}
+	if len(categoryClauses) == 1 {
+		clauses = append(clauses, categoryClauses[0])
+	} else if len(categoryClauses) > 1 {
+		clauses = append(clauses, bson.M{"$or": categoryClauses})
+	}
+
+	if len(clauses) == 0 {
+		return bson.M{}
+	}
+	if len(clauses) == 1 {
+		return clauses[0]
+	}
+	return bson.M{"$and": clauses}
+}
+
+func mainProductWithoutCategoryClause() bson.M {
+	return bson.M{
+		"$or": []bson.M{
+			{"categoryId": bson.M{"$exists": false}},
+			{"categoryId": primitive.NilObjectID},
+			{"categoryId": nil},
+		},
+	}
+}
+
+func mainProductLikelyEksmoClause() bson.M {
+	return bson.M{
+		"sourceGuidNom": bson.M{
+			"$type": "string",
+			"$ne":   "",
+			"$not":  primitive.Regex{Pattern: "^https?://", Options: "i"},
+		},
+	}
+}
+
+func mainProductSourceDomainClause(domain string) bson.M {
+	pattern := buildMainProductSourceDomainRegex(domain)
+	if pattern == "" {
+		return bson.M{}
+	}
+	return bson.M{
+		"$or": []bson.M{
+			{"sourceGuidNom": bson.M{"$regex": pattern, "$options": "i"}},
+			{"sourceGuid": bson.M{"$regex": pattern, "$options": "i"}},
+			{
+				"$and": []bson.M{
+					{
+						"$nor": []bson.M{
+							mainProductFieldHasDomainSourceClause("sourceGuidNom"),
+							mainProductFieldHasDomainSourceClause("sourceGuid"),
+						},
+					},
+					{"coverUrl": bson.M{"$regex": pattern, "$options": "i"}},
+				},
+			},
+		},
+	}
+}
+
+func buildMainProductSourceDomainRegex(domain string) string {
+	trimmed := strings.TrimSpace(strings.ToLower(domain))
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.TrimPrefix(trimmed, "www.")
+	if !looksLikeMainProductHost(trimmed) {
+		return ""
+	}
+	escaped := regexp.QuoteMeta(trimmed)
+	// Match exact domain in:
+	// - client identifiers (e.g. client:asaxiy.uz:T74018)
+	// - URLs/hosts (e.g. https://asaxiy.uz/... or asaxiy.uz/...)
+	// Intentionally avoids suffix matching (e.g. azbooka.ru should not match api.azbooka.ru).
+	clientPattern := "^client:(?:www\\.)?" + escaped + "(?::|$)"
+	urlPattern := "^(?:https?://)?(?:www\\.)?" + escaped + "(?::\\d+)?(?:/|$)"
+	return "(?:" + clientPattern + ")|(?:" + urlPattern + ")"
+}
+
+func mainProductFieldHasDomainSourceClause(field string) bson.M {
+	return bson.M{
+		field: bson.M{
+			"$regex":   `^(?:https?://|client:(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::|$)|(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?::\d+)?(?:/|$))`,
+			"$options": "i",
+		},
+	}
+}
+
+func mainProductOtherCategoryPathExpr() bson.M {
+	categoryPathExpr := bson.M{"$ifNull": bson.A{"$categoryPath", bson.A{}}}
+	subjectNicheExpr := bson.M{
+		"$filter": bson.M{
+			"input": bson.A{
+				bson.M{"$ifNull": bson.A{"$subjectName", ""}},
+				bson.M{"$ifNull": bson.A{"$nicheName", ""}},
+			},
+			"as":   "item",
+			"cond": bson.M{"$ne": bson.A{"$$item", ""}},
+		},
+	}
+	return bson.M{
+		"$cond": bson.A{
+			bson.M{"$gt": bson.A{bson.M{"$size": categoryPathExpr}, 0}},
+			categoryPathExpr,
+			bson.M{
+				"$cond": bson.A{
+					bson.M{"$gt": bson.A{bson.M{"$size": subjectNicheExpr}, 0}},
+					subjectNicheExpr,
+					bson.A{"Без категории"},
+				},
+			},
+		},
+	}
+}
+
+func mainProductSourceCategoryPathExpr() bson.M {
+	subjectNicheExpr := bson.M{
+		"$filter": bson.M{
+			"input": bson.A{
+				bson.M{"$ifNull": bson.A{"$subjectName", ""}},
+				bson.M{"$ifNull": bson.A{"$nicheName", ""}},
+			},
+			"as":   "item",
+			"cond": bson.M{"$ne": bson.A{"$$item", ""}},
+		},
+	}
+	categoryPathExpr := bson.M{"$ifNull": bson.A{"$categoryPath", bson.A{}}}
+	return bson.M{
+		"$cond": bson.A{
+			bson.M{"$gt": bson.A{bson.M{"$size": subjectNicheExpr}, 0}},
+			subjectNicheExpr,
+			bson.M{
+				"$cond": bson.A{
+					bson.M{"$gt": bson.A{bson.M{"$size": categoryPathExpr}, 0}},
+					categoryPathExpr,
+					bson.A{},
+				},
+			},
+		},
+	}
+}
+
+func mainProductSourceCategoryPath(
+	categoryPath []string,
+	subjectName, nicheName, sourceGUIDNOM, sourceGUID, coverURL string,
+	covers map[string]string,
+) []string {
+	basePath := sanitizeStringSlice([]string{subjectName, nicheName})
+	if len(basePath) == 0 {
+		basePath = sanitizeStringSlice(categoryPath)
+	}
+
+	domain := extractMainProductDomain(sourceGUIDNOM)
+	if domain == "" {
+		domain = extractMainProductDomain(sourceGUID)
+	}
+	if domain == "" {
+		domain = extractMainProductDomain(firstMainProductCoverURL(coverURL, covers))
+	}
+
+	if domain != "" {
+		if len(basePath) > 0 {
+			result := make([]string, 0, len(basePath)+1)
+			result = append(result, domain)
+			result = append(result, basePath...)
+			return result
+		}
+		return []string{domain}
+	}
+	return nil
+}
+
+func firstMainProductCoverURL(coverURL string, covers map[string]string) string {
+	if trimmed := strings.TrimSpace(coverURL); trimmed != "" {
+		return trimmed
+	}
+	if len(covers) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(covers))
+	for key := range covers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := strings.TrimSpace(covers[key])
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractMainProductURLCategoryPath(rawURL string) []string {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return nil
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil
+	}
+
+	host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+	if host == "" {
+		return nil
+	}
+	host = strings.TrimPrefix(host, "www.")
+
+	pathSegments := strings.Split(strings.Trim(parsed.EscapedPath(), "/"), "/")
+	cleanedSegments := make([]string, 0, len(pathSegments))
+	for index, rawSegment := range pathSegments {
+		segment := strings.TrimSpace(strings.ToLower(rawSegment))
+		if segment == "" {
+			continue
+		}
+		if index == len(pathSegments)-1 && looksLikeImageFilenameSegment(segment) {
+			continue
+		}
+		if isMainProductIgnoredURLSegment(segment) {
+			continue
+		}
+		cleanedSegments = append(cleanedSegments, segment)
+		if len(cleanedSegments) >= 5 {
+			break
 		}
 	}
 
-	if len(params.CategoryIDs) > 0 {
-		filter["categoryId"] = bson.M{"$in": params.CategoryIDs}
-	} else if !params.CategoryID.IsZero() {
-		filter["categoryId"] = params.CategoryID
+	result := make([]string, 0, 1+len(cleanedSegments))
+	result = append(result, host)
+	result = append(result, cleanedSegments...)
+	return result
+}
+
+func extractMainProductDomain(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	lowerTrimmed := strings.ToLower(trimmed)
+
+	if strings.HasPrefix(lowerTrimmed, "client:") {
+		parts := strings.SplitN(trimmed, ":", 3)
+		if len(parts) >= 2 {
+			host := strings.TrimSpace(strings.ToLower(parts[1]))
+			host = strings.TrimPrefix(host, "www.")
+			if looksLikeMainProductHost(host) {
+				return host
+			}
+		}
 	}
 
-	return filter
+	if strings.HasPrefix(trimmed, "//") {
+		trimmed = "https:" + trimmed
+	}
+
+	parseCandidate := trimmed
+	if !strings.HasPrefix(lowerTrimmed, "http://") && !strings.HasPrefix(lowerTrimmed, "https://") {
+		if looksLikeMainProductHost(parseCandidate) {
+			parseCandidate = "https://" + parseCandidate
+		} else {
+			return ""
+		}
+	}
+
+	parsed, err := url.Parse(parseCandidate)
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+	host = strings.TrimPrefix(host, "www.")
+	if !looksLikeMainProductHost(host) {
+		return ""
+	}
+	return host
+}
+
+func isLikelyExternalMainSourceIdentifier(guidNom, guid string) bool {
+	check := []string{guidNom, guid}
+	for _, raw := range check {
+		value := strings.TrimSpace(strings.ToLower(raw))
+		if value == "" {
+			continue
+		}
+		if strings.HasPrefix(value, "client:") || strings.HasPrefix(value, "client_url:") {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeMainProductHost(value string) bool {
+	trimmed := strings.TrimSpace(strings.ToLower(value))
+	if trimmed == "" {
+		return false
+	}
+	return regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)+$`).MatchString(trimmed)
+}
+
+func looksLikeImageFilenameSegment(segment string) bool {
+	if !strings.Contains(segment, ".") {
+		return false
+	}
+	lower := strings.ToLower(segment)
+	extensions := []string{
+		".jpg",
+		".jpeg",
+		".png",
+		".webp",
+		".gif",
+		".bmp",
+		".svg",
+		".avif",
+		".jfif",
+	}
+	for _, ext := range extensions {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMainProductIgnoredURLSegment(segment string) bool {
+	if segment == "" {
+		return true
+	}
+	ignored := map[string]struct{}{
+		"image":      {},
+		"images":     {},
+		"img":        {},
+		"upload":     {},
+		"uploads":    {},
+		"media":      {},
+		"static":     {},
+		"assets":     {},
+		"files":      {},
+		"file":       {},
+		"cache":      {},
+		"resized":    {},
+		"resize":     {},
+		"thumbnail":  {},
+		"thumbnails": {},
+		"thumb":      {},
+		"thumbs":     {},
+		"goods":      {},
+		"products":   {},
+		"product":    {},
+	}
+	_, exists := ignored[segment]
+	return exists
+}
+
+func buildMainProductCoverURLPathRegex(path []string) string {
+	safePath := sanitizeStringSlice(path)
+	if len(safePath) == 0 {
+		return ""
+	}
+
+	host := strings.TrimSpace(strings.ToLower(safePath[0]))
+	if host == "" || !strings.Contains(host, ".") {
+		return ""
+	}
+
+	hostPattern := regexp.QuoteMeta(strings.TrimPrefix(host, "www."))
+	if len(safePath) == 1 {
+		return "^https?://(?:www\\.)?" + hostPattern + "(?::\\d+)?(?:/|$)"
+	}
+
+	pattern := "^https?://(?:www\\.)?" + hostPattern + "(?::\\d+)?/"
+	for index := 1; index < len(safePath); index++ {
+		segment := strings.TrimSpace(strings.ToLower(safePath[index]))
+		if segment == "" {
+			continue
+		}
+		quoted := regexp.QuoteMeta(segment)
+		if index == len(safePath)-1 {
+			pattern += "(?:[^/?#]+/)*" + quoted + "(?:/|\\?|#|$)"
+		} else {
+			pattern += "(?:[^/?#]+/)*" + quoted + "/"
+		}
+	}
+	return pattern
 }
 
 func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainProduct {
@@ -797,6 +1770,12 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 	product.SourceNomCode = strings.TrimSpace(product.SourceNomCode)
 	product.AuthorCover = strings.TrimSpace(product.AuthorCover)
 	product.Annotation = strings.TrimSpace(product.Annotation)
+	product.AuthorNames = sanitizeStringSlice(product.AuthorNames)
+	product.AuthorRefs = sanitizeMainProductAuthorRefs(product.AuthorRefs)
+	product.TagRefs = sanitizeMainProductTagRefs(product.TagRefs)
+	product.GenreRefs = sanitizeMainProductGenreRefs(product.GenreRefs)
+	product.TagNames = sanitizeStringSlice(product.TagNames)
+	product.GenreNames = sanitizeStringSlice(product.GenreNames)
 	product.CoverURL = strings.TrimSpace(product.CoverURL)
 	product.Covers = sanitizeCoverMap(product.Covers)
 	if product.CoverURL == "" {
@@ -808,16 +1787,79 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 		}
 		product.Covers["manual_"+strconv.Itoa(len(product.Covers)+1)] = product.CoverURL
 	}
+	if product.Pages < 0 {
+		product.Pages = 0
+	}
+	product.Format = strings.TrimSpace(product.Format)
+	product.PaperType = strings.TrimSpace(product.PaperType)
+	product.BindingType = strings.TrimSpace(product.BindingType)
 	product.AgeRestriction = strings.TrimSpace(product.AgeRestriction)
 	product.SubjectName = strings.TrimSpace(product.SubjectName)
 	product.NicheName = strings.TrimSpace(product.NicheName)
 	product.BrandName = strings.TrimSpace(product.BrandName)
 	product.SeriesName = strings.TrimSpace(product.SeriesName)
 	product.PublisherName = strings.TrimSpace(product.PublisherName)
-	product.AuthorNames = sanitizeStringSlice(product.AuthorNames)
 	product.CategoryPath = sanitizeStringSlice(product.CategoryPath)
 	product.UpdatedAt = now
 	return product
+}
+
+func sanitizeMainProductAuthorRefs(values []models.EksmoProductAuthorRef) []models.EksmoProductAuthorRef {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductAuthorRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Code = strings.TrimSpace(item.Code)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Name == "" && item.Code == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func sanitizeMainProductTagRefs(values []models.EksmoProductTagRef) []models.EksmoProductTagRef {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductTagRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Name == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func sanitizeMainProductGenreRefs(values []models.EksmoProductGenreRef) []models.EksmoProductGenreRef {
+	if len(values) == 0 {
+		return nil
+	}
+	result := make([]models.EksmoProductGenreRef, 0, len(values))
+	for _, item := range values {
+		item.GUID = strings.TrimSpace(item.GUID)
+		item.Name = strings.TrimSpace(item.Name)
+		if item.GUID == "" && item.Name == "" {
+			continue
+		}
+		result = append(result, item)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func sanitizeCoverMap(covers map[string]string) map[string]string {

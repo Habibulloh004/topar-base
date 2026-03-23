@@ -25,6 +25,7 @@ const ACTIVE_PAGE_STORAGE_KEY = 'topar_dashboard_active_page'
 const MAIN_PRODUCTS_LIMIT_STORAGE_KEY = 'topar_dashboard_main_products_limit'
 const MAIN_PRODUCTS_VIEW_MODE_STORAGE_KEY = 'topar_dashboard_main_products_view_mode'
 const MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY = 'topar_dashboard_main_products_card_columns'
+const MAIN_PRODUCTS_WITHOUT_ISBN_ONLY_STORAGE_KEY = 'topar_dashboard_main_products_without_isbn_only'
 const SEARCH_DEBOUNCE_MS = 300
 const META_CACHE_STORAGE_KEY = 'topar_dashboard_meta_cache_v1'
 const META_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -99,6 +100,14 @@ function readStoredMainProductsCardColumns() {
   const raw = String(window.localStorage.getItem(MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY) || '').trim()
   if (!raw) return 4
   return clampCardColumns(raw)
+}
+
+function readStoredMainProductsWithoutIsbnOnly() {
+  if (typeof window === 'undefined') return false
+  const raw = String(window.localStorage.getItem(MAIN_PRODUCTS_WITHOUT_ISBN_ONLY_STORAGE_KEY) || '')
+    .trim()
+    .toLowerCase()
+  return raw === '1' || raw === 'true'
 }
 
 function writeDashboardSetting(key, value) {
@@ -700,7 +709,7 @@ function App() {
   const normalizedMainProductsSearchInput = useMemo(() => normalizeSearchQuery(mainProductsSearchInput), [mainProductsSearchInput])
   const mainProductsSearch = useDebounce(normalizedMainProductsSearchInput, SEARCH_DEBOUNCE_MS)
   const [mainProductsCategoryFilter, setMainProductsCategoryFilter] = useState([])
-  const [mainProductsWithoutISBNOnly, setMainProductsWithoutISBNOnly] = useState(false)
+  const [mainProductsWithoutISBNOnly, setMainProductsWithoutISBNOnly] = useState(() => readStoredMainProductsWithoutIsbnOnly())
   const [mainProductsSourceCategories, setMainProductsSourceCategories] = useState([])
   const [mainProductsSourceCategoriesLoading, setMainProductsSourceCategoriesLoading] = useState(false)
   const [mainProductsVersion, setMainProductsVersion] = useState(0)
@@ -708,6 +717,7 @@ function App() {
   const [mainProductsActionKey, setMainProductsActionKey] = useState('')
   const [selectedMainProductIds, setSelectedMainProductIds] = useState([])
   const [selectAllFilteredMainProducts, setSelectAllFilteredMainProducts] = useState(false)
+  const [excludedFilteredMainProductIds, setExcludedFilteredMainProductIds] = useState([])
   const [mainProductsBillzSyncing, setMainProductsBillzSyncing] = useState(false)
   const [mainProductsImporting, setMainProductsImporting] = useState(false)
   const [mainProductModalOpen, setMainProductModalOpen] = useState(false)
@@ -860,6 +870,10 @@ function App() {
   useEffect(() => {
     writeDashboardSetting(MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY, clampCardColumns(mainProductsCardColumns))
   }, [mainProductsCardColumns])
+
+  useEffect(() => {
+    writeDashboardSetting(MAIN_PRODUCTS_WITHOUT_ISBN_ONLY_STORAGE_KEY, mainProductsWithoutISBNOnly ? '1' : '0')
+  }, [mainProductsWithoutISBNOnly])
 
   useEffect(() => {
     if (!toast) return
@@ -1248,9 +1262,13 @@ function App() {
   const allVisibleSelected = visibleProductIds.length > 0 && selectedVisibleCount === visibleProductIds.length
   const visibleMainProductIds = useMemo(() => mainProducts.map((p) => getMainProductId(p)).filter(Boolean), [mainProducts])
   const visibleMainProductIdSet = useMemo(() => new Set(visibleMainProductIds), [visibleMainProductIds])
+  const excludedFilteredMainProductIdSet = useMemo(() => new Set(excludedFilteredMainProductIds), [excludedFilteredMainProductIds])
   const selectedVisibleMainProductsCount = useMemo(
-    () => selectedMainProductIds.filter((id) => visibleMainProductIdSet.has(id)).length,
-    [selectedMainProductIds, visibleMainProductIdSet]
+    () =>
+      selectAllFilteredMainProducts
+        ? visibleMainProductIds.filter((id) => !excludedFilteredMainProductIdSet.has(id)).length
+        : selectedMainProductIds.filter((id) => visibleMainProductIdSet.has(id)).length,
+    [selectAllFilteredMainProducts, visibleMainProductIds, excludedFilteredMainProductIdSet, selectedMainProductIds, visibleMainProductIdSet]
   )
   const expectedMainProductsOnPage = useMemo(() => {
     const remaining = Math.max(0, mainProductsTotalItems - (mainProductsPage - 1) * mainProductsLimit)
@@ -1258,7 +1276,9 @@ function App() {
   }, [mainProductsTotalItems, mainProductsPage, mainProductsLimit])
   const selectPageMainProductsCount = Math.max(visibleMainProductIds.length, expectedMainProductsOnPage)
   const allVisibleMainProductsSelected = visibleMainProductIds.length > 0 && selectedVisibleMainProductsCount === visibleMainProductIds.length
-  const selectedMainProductsCount = selectAllFilteredMainProducts ? mainProductsTotalItems : selectedMainProductIds.length
+  const selectedMainProductsCount = selectAllFilteredMainProducts
+    ? Math.max(0, mainProductsTotalItems - excludedFilteredMainProductIds.length)
+    : selectedMainProductIds.length
 
   useEffect(() => {
     setSelectedMainProductIds((prev) => prev.filter((id) => visibleMainProductIdSet.has(id)))
@@ -1268,6 +1288,7 @@ function App() {
     if (mainProductsTotalItems > 0) return
     if (!selectAllFilteredMainProducts) return
     setSelectAllFilteredMainProducts(false)
+    setExcludedFilteredMainProductIds([])
   }, [mainProductsTotalItems, selectAllFilteredMainProducts])
 
   const toggleEksmoNode = (guid) => setEksmoExpanded((prev) => ({ ...prev, [guid]: !prev[guid] }))
@@ -1328,8 +1349,14 @@ function App() {
   }
 
   const toggleMainProductSelection = (productID) => {
-    if (selectAllFilteredMainProducts) return
     if (!isMongoObjectId(productID)) return
+    if (selectAllFilteredMainProducts) {
+      setExcludedFilteredMainProductIds((prev) => {
+        if (prev.includes(productID)) return prev.filter((id) => id !== productID)
+        return [...prev, productID]
+      })
+      return
+    }
     setSelectedMainProductIds((prev) => {
       if (prev.includes(productID)) return prev.filter((id) => id !== productID)
       return [...prev, productID]
@@ -1337,8 +1364,19 @@ function App() {
   }
 
   const toggleSelectAllVisibleMainProducts = () => {
-    if (selectAllFilteredMainProducts) return
     if (visibleMainProductIds.length === 0) return
+    if (selectAllFilteredMainProducts) {
+      setExcludedFilteredMainProductIds((prev) => {
+        if (allVisibleMainProductsSelected) {
+          const next = new Set(prev)
+          visibleMainProductIds.forEach((id) => next.add(id))
+          return [...next]
+        }
+        const removeSet = new Set(visibleMainProductIds)
+        return prev.filter((id) => !removeSet.has(id))
+      })
+      return
+    }
     setSelectedMainProductIds((prev) => {
       if (allVisibleMainProductsSelected) {
         const removeSet = new Set(visibleMainProductIds)
@@ -1355,7 +1393,12 @@ function App() {
     if (mainProductsTotalItems <= 0) return
     const next = !selectAllFilteredMainProducts
     setSelectAllFilteredMainProducts(next)
-    if (next) setSelectedMainProductIds([])
+    if (next) {
+      setSelectedMainProductIds([])
+      setExcludedFilteredMainProductIds([])
+      return
+    }
+    setExcludedFilteredMainProductIds([])
   }
 
   const clearFilters = () => {
@@ -1377,6 +1420,7 @@ function App() {
     setMainProductsLimit(DEFAULT_PRODUCTS_LIMIT)
     setSelectedMainProductIds([])
     setSelectAllFilteredMainProducts(false)
+    setExcludedFilteredMainProductIds([])
   }
 
   const handleProductsLimitChange = (value) => setProductsLimit(clampQuantity(value))
@@ -1750,13 +1794,13 @@ function App() {
 
   const handleDeleteSelectedMainProducts = async () => {
     const deleteAllFiltered = selectAllFilteredMainProducts
-    const productIDs = deleteAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
+    const productIDs = deleteAllFiltered ? [] : [...new Set(selectedMainProductIds.filter((id) => isMongoObjectId(id)))]
     if (!deleteAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
-    if (deleteAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+    if (deleteAllFiltered && selectedMainProductsCount <= 0) return setMainProductsStatus('Нет выбранных товаров по текущему фильтру.')
 
     const confirmed = window.confirm(
       deleteAllFiltered
-        ? `Удалить все отфильтрованные товары (${mainProductsTotalItems.toLocaleString()}) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
+        ? `Удалить выбранные по фильтру товары (${selectedMainProductsCount.toLocaleString()}) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
         : `Удалить ${productIDs.length} товар(ов) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
     )
     if (!confirmed) return
@@ -1765,32 +1809,53 @@ function App() {
       setMainProductsActionKey('bulk-delete')
       setMainProductsStatus(
         deleteAllFiltered
-          ? `Удаление всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})...`
+          ? `Удаление выбранных по фильтру товаров (${selectedMainProductsCount.toLocaleString()})...`
           : `Удаление ${productIDs.length} выбранных товаров...`
       )
 
-      const response = await fetch(`${API_BASE_URL}/mainProducts`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          productIds: productIDs,
-          applyToFiltered: deleteAllFiltered,
-          search: mainProductsSearch.trim(),
-          sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
-          withoutCategory: includeMainProductsWithoutCategory,
-          withoutIsbn: mainProductsWithoutISBNOnly
-        })
-      })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
+      let deleted = 0
+      let notFound = 0
+      let invalid = 0
 
-      const deleted = Number(payload.deleted || 0)
-      const notFound = Number(payload.notFound || 0)
-      const invalid = Number(payload.invalid || 0)
+      if (deleteAllFiltered) {
+        const response = await fetch(`${API_BASE_URL}/mainProducts`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            productIds: [],
+            applyToFiltered: true,
+            search: mainProductsSearch.trim(),
+            sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
+            withoutCategory: includeMainProductsWithoutCategory,
+            withoutIsbn: mainProductsWithoutISBNOnly,
+            excludeProductIds: excludedFilteredMainProductIds
+          })
+        })
+        const payload = await response.json()
+        if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
+        deleted += Number(payload.deleted || 0)
+      } else {
+        const batches = splitIntoChunks(productIDs, MAX_PRODUCTS_LIMIT)
+        for (const batch of batches) {
+          const response = await fetch(`${API_BASE_URL}/mainProducts`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ productIds: batch })
+          })
+          const payload = await response.json()
+          if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
+          deleted += Number(payload.deleted || 0)
+          notFound += Number(payload.notFound || 0)
+          invalid += Number(payload.invalid || 0)
+        }
+      }
 
       if (deleted > 0) {
         setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
-        if (deleteAllFiltered) setSelectAllFilteredMainProducts(false)
+        if (deleteAllFiltered) {
+          setSelectAllFilteredMainProducts(false)
+          setExcludedFilteredMainProductIds([])
+        }
         setMainProductsVersion((prev) => prev + 1)
       }
 
@@ -1813,12 +1878,12 @@ function App() {
     const bindAllFiltered = selectAllFilteredMainProducts
     const productIDs = bindAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
     if (!bindAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
-    if (bindAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+    if (bindAllFiltered && selectedMainProductsCount <= 0) return setMainProductsStatus('Нет выбранных товаров по текущему фильтру.')
 
     const categoryName = selectedCategory.path?.join(' / ') || selectedCategory.name
     const confirmed = window.confirm(
       bindAllFiltered
-        ? `Привязать все отфильтрованные товары (${mainProductsTotalItems.toLocaleString()}) к категории «${categoryName}»?\n\nИзменение заменит текущую категорию у всех найденных товаров.`
+        ? `Привязать выбранные по фильтру товары (${selectedMainProductsCount.toLocaleString()}) к категории «${categoryName}»?\n\nИзменение заменит текущую категорию у всех найденных товаров.`
         : `Привязать ${productIDs.length} товар(ов) к категории «${categoryName}»?\n\nИзменение заменит текущую категорию у выбранных товаров.`
     )
     if (!confirmed) return
@@ -1827,7 +1892,7 @@ function App() {
       setMainProductsActionKey('bulk-link-category')
       setMainProductsStatus(
         bindAllFiltered
-          ? `Привязка всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()}) к категории...`
+          ? `Привязка выбранных по фильтру товаров (${selectedMainProductsCount.toLocaleString()}) к категории...`
           : `Привязка ${productIDs.length} выбранных товаров к категории...`
       )
 
@@ -1841,7 +1906,8 @@ function App() {
           search: mainProductsSearch.trim(),
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
           withoutCategory: includeMainProductsWithoutCategory,
-          withoutIsbn: mainProductsWithoutISBNOnly
+          withoutIsbn: mainProductsWithoutISBNOnly,
+          excludeProductIds: excludedFilteredMainProductIds
         })
       })
       const payload = await response.json()
@@ -1853,7 +1919,10 @@ function App() {
 
       if (linked > 0) {
         setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
-        if (bindAllFiltered) setSelectAllFilteredMainProducts(false)
+        if (bindAllFiltered) {
+          setSelectAllFilteredMainProducts(false)
+          setExcludedFilteredMainProductIds([])
+        }
         setMainProductsVersion((prev) => prev + 1)
       }
 
@@ -1873,11 +1942,11 @@ function App() {
     const unlinkAllFiltered = selectAllFilteredMainProducts
     const productIDs = unlinkAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
     if (!unlinkAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
-    if (unlinkAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+    if (unlinkAllFiltered && selectedMainProductsCount <= 0) return setMainProductsStatus('Нет выбранных товаров по текущему фильтру.')
 
     const confirmed = window.confirm(
       unlinkAllFiltered
-        ? `Отвязать категорию у всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})?\n\nУ товаров будет удалена текущая категория.`
+        ? `Отвязать категорию у выбранных по фильтру товаров (${selectedMainProductsCount.toLocaleString()})?\n\nУ товаров будет удалена текущая категория.`
         : `Отвязать категорию у ${productIDs.length} выбранных товар(ов)?\n\nУ товаров будет удалена текущая категория.`
     )
     if (!confirmed) return
@@ -1886,7 +1955,7 @@ function App() {
       setMainProductsActionKey('bulk-unlink-category')
       setMainProductsStatus(
         unlinkAllFiltered
-          ? `Отвязка категории у всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})...`
+          ? `Отвязка категории у выбранных по фильтру товаров (${selectedMainProductsCount.toLocaleString()})...`
           : `Отвязка категории у ${productIDs.length} выбранных товаров...`
       )
 
@@ -1899,7 +1968,8 @@ function App() {
           search: mainProductsSearch.trim(),
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
           withoutCategory: includeMainProductsWithoutCategory,
-          withoutIsbn: mainProductsWithoutISBNOnly
+          withoutIsbn: mainProductsWithoutISBNOnly,
+          excludeProductIds: excludedFilteredMainProductIds
         })
       })
       const payload = await response.json()
@@ -1911,7 +1981,10 @@ function App() {
 
       if (unlinked > 0) {
         setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
-        if (unlinkAllFiltered) setSelectAllFilteredMainProducts(false)
+        if (unlinkAllFiltered) {
+          setSelectAllFilteredMainProducts(false)
+          setExcludedFilteredMainProductIds([])
+        }
         setMainProductsVersion((prev) => prev + 1)
       }
 
@@ -2845,7 +2918,7 @@ function App() {
                   type="checkbox"
                   checked={allVisibleMainProductsSelected}
                   onChange={toggleSelectAllVisibleMainProducts}
-                  disabled={visibleMainProductIds.length === 0 || mainProductsActionKey !== '' || selectAllFilteredMainProducts}
+                  disabled={visibleMainProductIds.length === 0 || mainProductsActionKey !== ''}
                 />
                 <span>Выбрать страницу ({selectedVisibleMainProductsCount}/{selectPageMainProductsCount})</span>
               </label>
@@ -2858,7 +2931,6 @@ function App() {
                 />
                 <span>Выбрать все по фильтру ({mainProductsTotalItems.toLocaleString()})</span>
               </label>
-              <span className="selected-count">Выбрано: {selectedMainProductsCount.toLocaleString()}</span>
               <label className="select-all">
                 <input
                   type="checkbox"
@@ -2916,8 +2988,8 @@ function App() {
                 {mainProductsActionKey === 'bulk-delete'
                   ? 'Удаление...'
                   : selectAllFilteredMainProducts
-                    ? `Удалить по фильтру (${mainProductsTotalItems.toLocaleString()})`
-                    : `Удалить выбранные (${Math.min(selectedMainProductIds.length, MAX_PRODUCTS_LIMIT)})`}
+                    ? `Удалить по фильтру (${selectedMainProductsCount.toLocaleString()})`
+                    : `Удалить выбранные (${selectedMainProductIds.length})`}
               </button>
               <button className="btn clear-btn" type="button" onClick={clearMainProductsFilters}>
                 Очистить фильтры
@@ -2945,8 +3017,8 @@ function App() {
                         <MainProductCard
                           key={id || product.sourceGuidNom || product.sourceGuid || product.name}
                           product={product}
-                          checked={id ? selectedMainProductIds.includes(id) : false}
-                          selectable={Boolean(id) && !actionBusy && !selectAllFilteredMainProducts}
+                          checked={id ? (selectAllFilteredMainProducts ? !excludedFilteredMainProductIdSet.has(id) : selectedMainProductIds.includes(id)) : false}
+                          selectable={Boolean(id) && !actionBusy}
                           onToggle={() => toggleMainProductSelection(id)}
                           onViewDetails={() => setDetailsProduct(product)}
                           onEdit={() => openEditMainProductModal(product)}
@@ -2982,14 +3054,38 @@ function App() {
                           const actionDeletingModel = mainProductsActionKey === `delete:${id}`
                           const actionEditingModel = mainProductsActionKey === `edit:${id}`
                           const actionBusy = Boolean(mainProductsActionKey)
+                          const checked = id ? (selectAllFilteredMainProducts ? !excludedFilteredMainProductIdSet.has(id) : selectedMainProductIds.includes(id)) : false
+                          const selectable = Boolean(id) && !actionBusy
+
+                          const handleRowToggle = () => {
+                            if (!selectable) return
+                            toggleMainProductSelection(id)
+                          }
+
+                          const handleRowKeyDown = (event) => {
+                            if (!selectable) return
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              toggleMainProductSelection(id)
+                            }
+                          }
 
                           return (
-                            <tr key={id || product.sourceGuidNom || product.sourceGuid || product.name}>
+                            <tr
+                              key={id || product.sourceGuidNom || product.sourceGuid || product.name}
+                              className={checked ? 'selected' : ''}
+                              onClick={handleRowToggle}
+                              onKeyDown={handleRowKeyDown}
+                              role={selectable ? 'checkbox' : undefined}
+                              aria-checked={selectable ? checked : undefined}
+                              tabIndex={selectable ? 0 : -1}
+                            >
                               <td>
                                 <input
                                   type="checkbox"
-                                  checked={id ? selectedMainProductIds.includes(id) : false}
-                                  disabled={!id || actionBusy || selectAllFilteredMainProducts}
+                                  checked={checked}
+                                  disabled={!selectable}
+                                  onClick={(event) => event.stopPropagation()}
                                   onChange={() => toggleMainProductSelection(id)}
                                 />
                               </td>
@@ -3009,11 +3105,14 @@ function App() {
                               <td>{formatMainMetric(product.price, 2)}</td>
                               <td>{categoryText}</td>
                               <td>
-                                <div className="table-actions">
+                                <div className="table-actions" onClick={(event) => event.stopPropagation()}>
                                   <button
                                     className="btn table-btn"
                                     type="button"
-                                    onClick={() => setDetailsProduct(product)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      setDetailsProduct(product)
+                                    }}
                                   >
                                     <EyeIcon />
                                     Просмотр
@@ -3022,7 +3121,10 @@ function App() {
                                     className="btn table-btn"
                                     type="button"
                                     disabled={!id || actionBusy}
-                                    onClick={() => openEditMainProductModal(product)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      openEditMainProductModal(product)
+                                    }}
                                   >
                                     <EditIcon />
                                     {actionEditingModel ? 'Сохранение...' : 'Изменить'}
@@ -3031,7 +3133,10 @@ function App() {
                                     className="btn table-btn danger"
                                     type="button"
                                     disabled={!id || actionBusy}
-                                    onClick={() => handleDeleteMainProduct(id)}
+                                    onClick={(event) => {
+                                      event.stopPropagation()
+                                      handleDeleteMainProduct(id)
+                                    }}
                                   >
                                     {actionDeletingModel ? 'Удаление...' : 'Удалить из модели'}
                                   </button>

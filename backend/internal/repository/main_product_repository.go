@@ -243,6 +243,7 @@ type MainProductFilterParams struct {
 	Search              string
 	CategoryID          primitive.ObjectID
 	CategoryIDs         []primitive.ObjectID
+	ExcludeIDs          []primitive.ObjectID
 	WithoutCategory     bool
 	WithoutISBN         bool
 	IncludeEksmoSources bool
@@ -284,12 +285,116 @@ func (r *MainProductRepository) ListWithFilters(ctx context.Context, params Main
 		return nil, 0, err
 	}
 
-	opts := options.Find().
-		SetSkip((params.Page - 1) * params.Limit).
-		SetLimit(params.Limit).
-		SetSort(bson.D{{Key: "updatedAt", Value: -1}})
+	if strings.TrimSpace(params.Search) == "" {
+		opts := options.Find().
+			SetSkip((params.Page - 1) * params.Limit).
+			SetLimit(params.Limit).
+			SetSort(bson.D{{Key: "updatedAt", Value: -1}})
 
-	cursor, err := r.collection.Find(ctx, filter, opts)
+		cursor, err := r.collection.Find(ctx, filter, opts)
+		if err != nil {
+			return nil, 0, err
+		}
+		defer cursor.Close(ctx)
+
+		var products []models.MainProduct
+		if err := cursor.All(ctx, &products); err != nil {
+			return nil, 0, err
+		}
+		return products, total, nil
+	}
+
+	escapedSearch := regexp.QuoteMeta(strings.TrimSpace(params.Search))
+	normalizedSearch := strings.ToLower(strings.TrimSpace(params.Search))
+	nameExpr := bson.M{"$toString": bson.M{"$ifNull": bson.A{"$name", ""}}}
+	trimmedNameExpr := bson.M{"$trim": bson.M{"input": nameExpr}}
+	normalizedNameExpr := bson.M{"$toLower": trimmedNameExpr}
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: filter}},
+		{{Key: "$addFields", Value: bson.M{
+			"__searchPriority": bson.M{
+				"$switch": bson.M{
+					"branches": bson.A{
+						bson.M{
+							"case": bson.M{
+								"$eq": bson.A{
+									normalizedNameExpr,
+									normalizedSearch,
+								},
+							},
+							"then": 4,
+						},
+						bson.M{
+							"case": bson.M{
+								"$regexMatch": bson.M{
+									"input":   trimmedNameExpr,
+									"regex":   "^" + escapedSearch,
+									"options": "i",
+								},
+							},
+							"then": 3,
+						},
+						bson.M{
+							"case": bson.M{
+								"$regexMatch": bson.M{
+									"input":   trimmedNameExpr,
+									"regex":   "(^|\\s)" + escapedSearch,
+									"options": "i",
+								},
+							},
+							"then": 2,
+						},
+						bson.M{
+							"case": bson.M{
+								"$regexMatch": bson.M{
+									"input":   trimmedNameExpr,
+									"regex":   escapedSearch,
+									"options": "i",
+								},
+							},
+							"then": 1,
+						},
+					},
+					"default": 0,
+				},
+			},
+			"__nameLength": bson.M{
+				"$strLenCP": trimmedNameExpr,
+			},
+			"__nameSearchPosition": bson.M{
+				"$indexOfCP": bson.A{
+					normalizedNameExpr,
+					normalizedSearch,
+				},
+			},
+		}}},
+		{{Key: "$addFields", Value: bson.M{
+			"__nameSearchPositionSort": bson.M{
+				"$cond": bson.M{
+					"if":   bson.M{"$gte": bson.A{"$__nameSearchPosition", 0}},
+					"then": "$__nameSearchPosition",
+					"else": 2147483647,
+				},
+			},
+		}}},
+		{{Key: "$sort", Value: bson.D{
+			{Key: "__searchPriority", Value: -1},
+			{Key: "__nameSearchPositionSort", Value: 1},
+			{Key: "__nameLength", Value: 1},
+			{Key: "updatedAt", Value: -1},
+		}}},
+		{{Key: "$skip", Value: (params.Page - 1) * params.Limit}},
+		{{Key: "$limit", Value: params.Limit}},
+		{{Key: "$project", Value: bson.M{
+			"__searchPriority":         0,
+			"__nameLength":             0,
+			"__nameSearchPosition":     0,
+			"__nameSearchPositionSort": 0,
+		}}},
+	}
+
+	cursor, err := r.collection.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1215,6 +1320,9 @@ func buildMainProductFilter(params MainProductFilterParams) bson.M {
 	}
 	if params.WithoutISBN {
 		clauses = append(clauses, mainProductWithoutISBNClause())
+	}
+	if len(params.ExcludeIDs) > 0 {
+		clauses = append(clauses, bson.M{"_id": bson.M{"$nin": params.ExcludeIDs}})
 	}
 
 	categoryClauses := make([]bson.M, 0, 2)

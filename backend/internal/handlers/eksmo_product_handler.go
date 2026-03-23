@@ -691,14 +691,17 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 	if h.mainProductRepo == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
 	}
-	if served, err := h.tryServeCachedJSON(c, cacheNamespaceMainProducts); served || err != nil {
-		return err
+	searchQuery := strings.TrimSpace(c.Query("search"))
+	if searchQuery == "" {
+		if served, err := h.tryServeCachedJSON(c, cacheNamespaceMainProducts); served || err != nil {
+			return err
+		}
 	}
 
 	params := repository.MainProductFilterParams{
 		Page:            int64(parseIntQuery(c, "page", 1)),
 		Limit:           int64(parseIntQuery(c, "limit", 20)),
-		Search:          strings.TrimSpace(c.Query("search")),
+		Search:          searchQuery,
 		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
 		WithoutISBN:     parseBoolQuery(c, "withoutIsbn", false),
 	}
@@ -783,6 +786,7 @@ func (h *EksmoProductHandler) SyncMainProductsFromBillz(c *fiber.Ctx) error {
 
 type DeleteMainProductsRequest struct {
 	ProductIDs         []string `json:"productIds"`
+	ExcludeProductIDs  []string `json:"excludeProductIds"`
 	Search             string   `json:"search"`
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
@@ -792,6 +796,7 @@ type DeleteMainProductsRequest struct {
 
 type LinkMainProductsCategoryRequest struct {
 	ProductIDs         []string `json:"productIds"`
+	ExcludeProductIDs  []string `json:"excludeProductIds"`
 	CategoryID         string   `json:"categoryId"`
 	Search             string   `json:"search"`
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
@@ -802,6 +807,7 @@ type LinkMainProductsCategoryRequest struct {
 
 type UnlinkMainProductsCategoryRequest struct {
 	ProductIDs         []string `json:"productIds"`
+	ExcludeProductIDs  []string `json:"excludeProductIds"`
 	Search             string   `json:"search"`
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
@@ -938,6 +944,7 @@ func (h *EksmoProductHandler) DeleteMainProducts(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
 		params.SourceCategoryPaths = sourceCategoryPaths
@@ -1125,6 +1132,7 @@ func (h *EksmoProductHandler) LinkMainProductsCategory(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
 		params.SourceCategoryPaths = sourceCategoryPaths
@@ -1218,6 +1226,7 @@ func (h *EksmoProductHandler) UnlinkMainProductsCategory(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
 		params.SourceCategoryPaths = sourceCategoryPaths
@@ -1885,6 +1894,28 @@ func parseObjectIDsCSV(raw string) []primitive.ObjectID {
 	result := make([]primitive.ObjectID, 0, len(values))
 	seen := make(map[primitive.ObjectID]struct{}, len(values))
 	for _, value := range values {
+		oid, err := primitive.ObjectIDFromHex(value)
+		if err != nil {
+			continue
+		}
+		if _, exists := seen[oid]; exists {
+			continue
+		}
+		seen[oid] = struct{}{}
+		result = append(result, oid)
+	}
+	return result
+}
+
+func parseObjectIDsSlice(values []string) []primitive.ObjectID {
+	cleaned := cleanStringSlice(values)
+	if len(cleaned) == 0 {
+		return nil
+	}
+
+	result := make([]primitive.ObjectID, 0, len(cleaned))
+	seen := make(map[primitive.ObjectID]struct{}, len(cleaned))
+	for _, value := range cleaned {
 		oid, err := primitive.ObjectIDFromHex(value)
 		if err != nil {
 			continue

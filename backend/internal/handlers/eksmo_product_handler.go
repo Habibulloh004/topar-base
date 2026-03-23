@@ -700,6 +700,7 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 		Limit:           int64(parseIntQuery(c, "limit", 20)),
 		Search:          strings.TrimSpace(c.Query("search")),
 		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
+		WithoutISBN:     parseBoolQuery(c, "withoutIsbn", false),
 	}
 
 	if params.Limit > 200 {
@@ -781,7 +782,12 @@ func (h *EksmoProductHandler) SyncMainProductsFromBillz(c *fiber.Ctx) error {
 }
 
 type DeleteMainProductsRequest struct {
-	ProductIDs []string `json:"productIds"`
+	ProductIDs         []string `json:"productIds"`
+	Search             string   `json:"search"`
+	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
+	WithoutCategory    bool     `json:"withoutCategory"`
+	WithoutISBN        bool     `json:"withoutIsbn"`
+	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
 type LinkMainProductsCategoryRequest struct {
@@ -790,6 +796,7 @@ type LinkMainProductsCategoryRequest struct {
 	Search             string   `json:"search"`
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
+	WithoutISBN        bool     `json:"withoutIsbn"`
 	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
@@ -798,6 +805,7 @@ type UnlinkMainProductsCategoryRequest struct {
 	Search             string   `json:"search"`
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
+	WithoutISBN        bool     `json:"withoutIsbn"`
 	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
@@ -922,6 +930,41 @@ func (h *EksmoProductHandler) DeleteMainProducts(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if req.ApplyToFiltered {
+		params := repository.MainProductFilterParams{
+			Search:          strings.TrimSpace(req.Search),
+			WithoutCategory: req.WithoutCategory,
+			WithoutISBN:     req.WithoutISBN,
+		}
+		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
+		params.SourceCategoryPaths = sourceCategoryPaths
+		params.OtherCategoryPaths = otherCategoryPaths
+		params.SourceDomains = sourceDomains
+		if includeWithoutCategory {
+			params.WithoutCategory = true
+		}
+		if includeEksmo {
+			params.IncludeEksmoSources = true
+		}
+
+		deletedProducts, err := h.mainProductRepo.DeleteByFilter(ctx, params)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+
+		h.refreshEksmoMainFlagsAfterDelete(ctx, deletedProducts)
+		h.invalidateProductCaches()
+
+		return c.JSON(fiber.Map{
+			"message": "Filtered products removed from main_products",
+			"mode":    "filtered",
+			"deleted": len(deletedProducts),
+		})
+	}
+
 	req.ProductIDs = cleanStringSlice(req.ProductIDs)
 	if len(req.ProductIDs) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "productIds must contain at least one id"})
@@ -948,9 +991,6 @@ func (h *EksmoProductHandler) DeleteMainProducts(c *fiber.Ctx) error {
 	if len(ids) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "productIds must contain at least one valid ObjectID"})
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
 
 	deletedProducts, err := h.mainProductRepo.DeleteByIDs(ctx, ids)
 	if err != nil {
@@ -1084,6 +1124,7 @@ func (h *EksmoProductHandler) LinkMainProductsCategory(c *fiber.Ctx) error {
 		params := repository.MainProductFilterParams{
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
+			WithoutISBN:     req.WithoutISBN,
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
 		params.SourceCategoryPaths = sourceCategoryPaths
@@ -1176,6 +1217,7 @@ func (h *EksmoProductHandler) UnlinkMainProductsCategory(c *fiber.Ctx) error {
 		params := repository.MainProductFilterParams{
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
+			WithoutISBN:     req.WithoutISBN,
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
 		params.SourceCategoryPaths = sourceCategoryPaths

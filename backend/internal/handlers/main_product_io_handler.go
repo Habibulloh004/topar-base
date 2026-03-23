@@ -776,6 +776,7 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 	params := repository.MainProductFilterParams{
 		Search:          strings.TrimSpace(c.Query("search")),
 		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
+		WithoutISBN:     parseBoolQuery(c, "withoutIsbn", false),
 	}
 
 	categoryIDs := parseObjectIDsCSV(c.Query("categoryIds"))

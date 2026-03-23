@@ -244,6 +244,7 @@ type MainProductFilterParams struct {
 	CategoryID          primitive.ObjectID
 	CategoryIDs         []primitive.ObjectID
 	WithoutCategory     bool
+	WithoutISBN         bool
 	IncludeEksmoSources bool
 	SourceDomains       []string
 	SourceCategoryPaths [][]string
@@ -844,6 +845,47 @@ func (r *MainProductRepository) DeleteByIDs(ctx context.Context, ids []primitive
 	return deleted, nil
 }
 
+func (r *MainProductRepository) DeleteByFilter(ctx context.Context, params MainProductFilterParams) ([]models.MainProduct, error) {
+	filter := buildMainProductFilter(params)
+	projection := bson.M{
+		"_id":           1,
+		"sourceGuidNom": 1,
+		"sourceGuid":    1,
+		"sourceNomcode": 1,
+	}
+
+	cursor, err := r.collection.Find(ctx, filter, options.Find().SetProjection(projection))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	deleted := []models.MainProduct{}
+	if err := cursor.All(ctx, &deleted); err != nil {
+		return nil, err
+	}
+	if len(deleted) == 0 {
+		return deleted, nil
+	}
+
+	foundIDs := make([]primitive.ObjectID, 0, len(deleted))
+	for _, item := range deleted {
+		if item.ID.IsZero() {
+			continue
+		}
+		foundIDs = append(foundIDs, item.ID)
+	}
+	if len(foundIDs) == 0 {
+		return []models.MainProduct{}, nil
+	}
+
+	if _, err := r.collection.DeleteMany(ctx, bson.M{"_id": bson.M{"$in": foundIDs}}); err != nil {
+		return nil, err
+	}
+
+	return deleted, nil
+}
+
 func (r *MainProductRepository) RemoveCategoryByID(ctx context.Context, id primitive.ObjectID) (bool, error) {
 	result, err := r.collection.UpdateOne(ctx,
 		bson.M{"_id": id},
@@ -1171,6 +1213,9 @@ func buildMainProductFilter(params MainProductFilterParams) bson.M {
 			},
 		})
 	}
+	if params.WithoutISBN {
+		clauses = append(clauses, mainProductWithoutISBNClause())
+	}
 
 	categoryClauses := make([]bson.M, 0, 2)
 	if len(params.CategoryIDs) > 0 {
@@ -1394,6 +1439,16 @@ func mainProductWithoutCategoryClause() bson.M {
 			{"categoryId": bson.M{"$exists": false}},
 			{"categoryId": primitive.NilObjectID},
 			{"categoryId": nil},
+		},
+	}
+}
+
+func mainProductWithoutISBNClause() bson.M {
+	return bson.M{
+		"$or": []bson.M{
+			{"isbn": bson.M{"$exists": false}},
+			{"isbn": nil},
+			{"isbn": bson.M{"$regex": "^\\s*$"}},
 		},
 	}
 }

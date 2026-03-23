@@ -700,6 +700,7 @@ function App() {
   const normalizedMainProductsSearchInput = useMemo(() => normalizeSearchQuery(mainProductsSearchInput), [mainProductsSearchInput])
   const mainProductsSearch = useDebounce(normalizedMainProductsSearchInput, SEARCH_DEBOUNCE_MS)
   const [mainProductsCategoryFilter, setMainProductsCategoryFilter] = useState([])
+  const [mainProductsWithoutISBNOnly, setMainProductsWithoutISBNOnly] = useState(false)
   const [mainProductsSourceCategories, setMainProductsSourceCategories] = useState([])
   const [mainProductsSourceCategoriesLoading, setMainProductsSourceCategoriesLoading] = useState(false)
   const [mainProductsVersion, setMainProductsVersion] = useState(0)
@@ -1166,6 +1167,7 @@ function App() {
           params.set('sourceCategoryKeys', selectedMainProductsSourceCategoryKeysParam)
         }
         if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
+        if (mainProductsWithoutISBNOnly) params.set('withoutIsbn', '1')
 
         const response = await fetch(`${API_BASE_URL}/mainProducts?${params.toString()}`, { signal: controller.signal })
         if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
@@ -1185,11 +1187,11 @@ function App() {
 
     loadMainProducts()
     return () => controller.abort()
-  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsVersion])
+  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsVersion])
 
   useEffect(() => {
     setMainProductsPage(1)
-  }, [mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsLimit])
+  }, [mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsLimit])
 
   useEffect(() => {
     if (activePage !== 'duplicates') return
@@ -1371,6 +1373,7 @@ function App() {
   const clearMainProductsFilters = () => {
     setMainProductsSearchInput('')
     setMainProductsCategoryFilter([])
+    setMainProductsWithoutISBNOnly(false)
     setMainProductsLimit(DEFAULT_PRODUCTS_LIMIT)
     setSelectedMainProductIds([])
     setSelectAllFilteredMainProducts(false)
@@ -1746,24 +1749,37 @@ function App() {
   }
 
   const handleDeleteSelectedMainProducts = async () => {
-    if (selectAllFilteredMainProducts) {
-      return setMainProductsStatus('Снимите «Выбрать все по фильтру», чтобы удалять товары вручную.')
-    }
-    const productIDs = selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
-    if (productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
+    const deleteAllFiltered = selectAllFilteredMainProducts
+    const productIDs = deleteAllFiltered ? [] : selectedMainProductIds.filter((id) => isMongoObjectId(id)).slice(0, MAX_PRODUCTS_LIMIT)
+    if (!deleteAllFiltered && productIDs.length === 0) return setMainProductsStatus('Выберите хотя бы один основной товар.')
+    if (deleteAllFiltered && mainProductsTotalItems <= 0) return setMainProductsStatus('Нет товаров по текущему фильтру.')
+
     const confirmed = window.confirm(
-      `Удалить ${productIDs.length} товар(ов) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
+      deleteAllFiltered
+        ? `Удалить все отфильтрованные товары (${mainProductsTotalItems.toLocaleString()}) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
+        : `Удалить ${productIDs.length} товар(ов) из основной модели?\n\nВнимание: все ручные изменения для удаленных товаров будут потеряны.`
     )
     if (!confirmed) return
 
     try {
       setMainProductsActionKey('bulk-delete')
-      setMainProductsStatus(`Удаление ${productIDs.length} выбранных товаров...`)
+      setMainProductsStatus(
+        deleteAllFiltered
+          ? `Удаление всех отфильтрованных товаров (${mainProductsTotalItems.toLocaleString()})...`
+          : `Удаление ${productIDs.length} выбранных товаров...`
+      )
 
       const response = await fetch(`${API_BASE_URL}/mainProducts`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ productIds: productIDs })
+        body: JSON.stringify({
+          productIds: productIDs,
+          applyToFiltered: deleteAllFiltered,
+          search: mainProductsSearch.trim(),
+          sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
+          withoutCategory: includeMainProductsWithoutCategory,
+          withoutIsbn: mainProductsWithoutISBNOnly
+        })
       })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
@@ -1774,10 +1790,11 @@ function App() {
 
       if (deleted > 0) {
         setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
+        if (deleteAllFiltered) setSelectAllFilteredMainProducts(false)
         setMainProductsVersion((prev) => prev + 1)
       }
 
-      if (notFound > 0 || invalid > 0) {
+      if (!deleteAllFiltered && (notFound > 0 || invalid > 0)) {
         setMainProductsStatus(`Удалено: ${deleted}, не найдено: ${notFound}, некорректно: ${invalid}.`)
       } else {
         setMainProductsStatus(`Удалено товаров из основной модели: ${deleted}.`)
@@ -1823,7 +1840,8 @@ function App() {
           applyToFiltered: bindAllFiltered,
           search: mainProductsSearch.trim(),
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
-          withoutCategory: includeMainProductsWithoutCategory
+          withoutCategory: includeMainProductsWithoutCategory,
+          withoutIsbn: mainProductsWithoutISBNOnly
         })
       })
       const payload = await response.json()
@@ -1880,7 +1898,8 @@ function App() {
           applyToFiltered: unlinkAllFiltered,
           search: mainProductsSearch.trim(),
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
-          withoutCategory: includeMainProductsWithoutCategory
+          withoutCategory: includeMainProductsWithoutCategory,
+          withoutIsbn: mainProductsWithoutISBNOnly
         })
       })
       const payload = await response.json()
@@ -1938,6 +1957,7 @@ function App() {
       params.set('sourceCategoryKeys', selectedMainProductsSourceCategoryKeysParam)
     }
     if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
+    if (mainProductsWithoutISBNOnly) params.set('withoutIsbn', '1')
     return params
   }
 
@@ -2839,6 +2859,15 @@ function App() {
                 <span>Выбрать все по фильтру ({mainProductsTotalItems.toLocaleString()})</span>
               </label>
               <span className="selected-count">Выбрано: {selectedMainProductsCount.toLocaleString()}</span>
+              <label className="select-all">
+                <input
+                  type="checkbox"
+                  checked={mainProductsWithoutISBNOnly}
+                  onChange={() => setMainProductsWithoutISBNOnly((prev) => !prev)}
+                  disabled={mainProductsActionKey !== ''}
+                />
+                <span>Только без ISBN</span>
+              </label>
               <FilterTreeSelect
                 label="Категория"
                 nodes={mainProductsSourceCategories}
@@ -2882,9 +2911,13 @@ function App() {
                 className="btn table-btn danger"
                 type="button"
                 onClick={handleDeleteSelectedMainProducts}
-                disabled={selectedMainProductIds.length === 0 || mainProductsActionKey !== '' || selectAllFilteredMainProducts}
+                disabled={selectedMainProductsCount === 0 || mainProductsActionKey !== ''}
               >
-                {mainProductsActionKey === 'bulk-delete' ? 'Удаление...' : `Удалить выбранные (${Math.min(selectedMainProductIds.length, MAX_PRODUCTS_LIMIT)})`}
+                {mainProductsActionKey === 'bulk-delete'
+                  ? 'Удаление...'
+                  : selectAllFilteredMainProducts
+                    ? `Удалить по фильтру (${mainProductsTotalItems.toLocaleString()})`
+                    : `Удалить выбранные (${Math.min(selectedMainProductIds.length, MAX_PRODUCTS_LIMIT)})`}
               </button>
               <button className="btn clear-btn" type="button" onClick={clearMainProductsFilters}>
                 Очистить фильтры

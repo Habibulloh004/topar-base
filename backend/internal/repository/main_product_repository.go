@@ -116,6 +116,7 @@ func (r *MainProductRepository) UpsertFromEksmoProducts(
 			GenreRefs:       p.GenreRefs,
 			TagNames:        p.TagNames,
 			GenreNames:      p.GenreNames,
+			Description:     p.Annotation,
 			Annotation:      p.Annotation,
 			CoverURL:        p.CoverURL,
 			Pages:           p.Pages,
@@ -246,6 +247,8 @@ type MainProductFilterParams struct {
 	ExcludeIDs          []primitive.ObjectID
 	WithoutCategory     bool
 	WithoutISBN         bool
+	BillzSyncable       *bool
+	InfoComplete        *bool
 	IncludeEksmoSources bool
 	SourceDomains       []string
 	SourceCategoryPaths [][]string
@@ -738,10 +741,11 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	}
 
 	setDoc := bson.M{
-		"name":      doc.Name,
-		"quantity":  doc.Quantity,
-		"price":     doc.Price,
-		"updatedAt": now,
+		"name":           doc.Name,
+		"quantity":       doc.Quantity,
+		"price":          doc.Price,
+		"isInfoComplete": doc.IsInfoComplete,
+		"updatedAt":      now,
 	}
 	unsetDoc := bson.M{}
 
@@ -781,6 +785,7 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	}
 	setOrUnsetSlice("tagNames", doc.TagNames)
 	setOrUnsetSlice("genreNames", doc.GenreNames)
+	setOrUnsetString("description", doc.Description)
 	setOrUnsetString("annotation", doc.Annotation)
 	setOrUnsetString("coverUrl", doc.CoverURL)
 	if len(doc.Covers) == 0 {
@@ -1321,6 +1326,12 @@ func buildMainProductFilter(params MainProductFilterParams) bson.M {
 	if params.WithoutISBN {
 		clauses = append(clauses, mainProductWithoutISBNClause())
 	}
+	if params.BillzSyncable != nil {
+		clauses = append(clauses, mainProductBillzSyncableClause(*params.BillzSyncable))
+	}
+	if params.InfoComplete != nil {
+		clauses = append(clauses, mainProductInfoCompleteClause(*params.InfoComplete))
+	}
 	if len(params.ExcludeIDs) > 0 {
 		clauses = append(clauses, bson.M{"_id": bson.M{"$nin": params.ExcludeIDs}})
 	}
@@ -1557,6 +1568,31 @@ func mainProductWithoutISBNClause() bson.M {
 			{"isbn": bson.M{"$exists": false}},
 			{"isbn": nil},
 			{"isbn": bson.M{"$regex": "^\\s*$"}},
+		},
+	}
+}
+
+func mainProductBillzSyncableClause(syncable bool) bson.M {
+	if syncable {
+		return bson.M{
+			"isbn": bson.M{
+				"$exists": true,
+				"$regex":  "\\S",
+			},
+		}
+	}
+	return mainProductWithoutISBNClause()
+}
+
+func mainProductInfoCompleteClause(complete bool) bson.M {
+	if complete {
+		return bson.M{"isInfoComplete": true}
+	}
+	return bson.M{
+		"$or": []bson.M{
+			{"isInfoComplete": bson.M{"$exists": false}},
+			{"isInfoComplete": nil},
+			{"isInfoComplete": false},
 		},
 	}
 }
@@ -1932,7 +1968,14 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 	product.SourceGUIDNOM = strings.TrimSpace(product.SourceGUIDNOM)
 	product.SourceNomCode = strings.TrimSpace(product.SourceNomCode)
 	product.AuthorCover = strings.TrimSpace(product.AuthorCover)
+	product.Description = strings.TrimSpace(product.Description)
 	product.Annotation = strings.TrimSpace(product.Annotation)
+	if product.Description == "" && product.Annotation != "" {
+		product.Description = product.Annotation
+	}
+	if product.Annotation == "" && product.Description != "" {
+		product.Annotation = product.Description
+	}
 	product.AuthorNames = sanitizeStringSlice(product.AuthorNames)
 	product.AuthorRefs = sanitizeMainProductAuthorRefs(product.AuthorRefs)
 	product.TagRefs = sanitizeMainProductTagRefs(product.TagRefs)

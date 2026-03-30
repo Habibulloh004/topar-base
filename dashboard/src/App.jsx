@@ -32,6 +32,20 @@ const META_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 const AGE_FILTER_OPTIONS = ['0+', '6+', '12+', '16+', '18+']
 const ALLOWED_ACTIVE_PAGES = ['mainProducts', 'duplicates']
 const MAIN_PRODUCTS_OTHER_NODE_KEY = 'other'
+const MAIN_PRODUCTS_BILLZ_SYNC_FILTER_VALUES = new Set(['all', 'syncable', 'unsyncable'])
+const MAIN_PRODUCTS_INFO_COMPLETE_FILTER_VALUES = new Set(['all', 'checked', 'unchecked'])
+
+function normalizeBillzSyncFilter(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (MAIN_PRODUCTS_BILLZ_SYNC_FILTER_VALUES.has(normalized)) return normalized
+  return 'all'
+}
+
+function normalizeInfoCompleteFilter(value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (MAIN_PRODUCTS_INFO_COMPLETE_FILTER_VALUES.has(normalized)) return normalized
+  return 'all'
+}
 
 const EMPTY_META = {
   subjects: [],
@@ -127,6 +141,8 @@ const EMPTY_MAIN_PRODUCT_FORM = {
   genreRefsJson: '',
   tagNames: '',
   genreNames: '',
+  isInfoComplete: false,
+  description: '',
   annotation: '',
   coverUrl: '',
   coverUrls: [],
@@ -604,6 +620,82 @@ function normalizeCoverUrls(values) {
   return result
 }
 
+const SUPPORTED_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'])
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'image/svg+xml'])
+
+function parseImageUrlsInput(value) {
+  const parts = String(value || '')
+    .split(/\r?\n|[,;|]/g)
+    .map((item) => String(item || '').trim())
+  return normalizeCoverUrls(parts)
+}
+
+function extractImageExtension(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+
+  let pathname = text
+  if (/^https?:\/\//i.test(text)) {
+    try {
+      pathname = new URL(text).pathname || ''
+    } catch (_) {
+      pathname = text
+    }
+  } else {
+    pathname = text.split('?')[0].split('#')[0]
+  }
+
+  const filename = pathname.split('/').pop() || ''
+  const dotIndex = filename.lastIndexOf('.')
+  if (dotIndex <= 0 || dotIndex === filename.length - 1) return ''
+  return filename.slice(dotIndex + 1).toLowerCase()
+}
+
+function hasSupportedImageTypeByExtension(value) {
+  const ext = extractImageExtension(value)
+  return Boolean(ext && SUPPORTED_IMAGE_EXTENSIONS.has(ext))
+}
+
+async function validateExternalImageUrl(value) {
+  const normalized = normalizeImageValue(value)
+  if (!normalized) {
+    return { ok: false, error: 'Введите URL изображения.' }
+  }
+  if (!/^https?:\/\//i.test(normalized) && !normalized.startsWith('/')) {
+    return { ok: false, error: 'Поддерживаются только /uploads/... и http(s)://...' }
+  }
+
+  if (normalized.startsWith('/')) {
+    if (!hasSupportedImageTypeByExtension(normalized)) {
+      return { ok: false, error: 'Неподдерживаемый тип. Разрешены JPG, PNG, WEBP, GIF, SVG.' }
+    }
+    return { ok: true, url: normalized }
+  }
+
+  const supportedByExtension = hasSupportedImageTypeByExtension(normalized)
+  try {
+    const response = await fetch(normalized, { method: 'HEAD' })
+    const rawContentType = String(response.headers.get('content-type') || '').toLowerCase()
+    const contentType = rawContentType.split(';')[0].trim()
+    if (contentType && contentType.startsWith('image/')) {
+      if (!SUPPORTED_IMAGE_MIME_TYPES.has(contentType)) {
+        return { ok: false, error: 'Неподдерживаемый MIME-тип изображения.' }
+      }
+      return { ok: true, url: normalized }
+    }
+    if (contentType && !contentType.startsWith('image/')) {
+      return { ok: false, error: 'URL не указывает на изображение.' }
+    }
+  } catch (_) {
+    // Some external hosts block CORS/HEAD; fall back to extension check.
+  }
+
+  if (supportedByExtension) {
+    return { ok: true, url: normalized }
+  }
+  return { ok: false, error: 'Не удалось подтвердить тип изображения. Добавьте URL с расширением JPG/PNG/WEBP/GIF/SVG.' }
+}
+
 function extractCoverUrlsFromProduct(product) {
   const result = []
   if (product?.coverUrl) result.push(String(product.coverUrl))
@@ -710,6 +802,8 @@ function App() {
   const mainProductsSearch = useDebounce(normalizedMainProductsSearchInput, SEARCH_DEBOUNCE_MS)
   const [mainProductsCategoryFilter, setMainProductsCategoryFilter] = useState([])
   const [mainProductsWithoutISBNOnly, setMainProductsWithoutISBNOnly] = useState(() => readStoredMainProductsWithoutIsbnOnly())
+  const [mainProductsBillzSyncFilter, setMainProductsBillzSyncFilter] = useState('all')
+  const [mainProductsInfoCompleteFilter, setMainProductsInfoCompleteFilter] = useState('all')
   const [mainProductsSourceCategories, setMainProductsSourceCategories] = useState([])
   const [mainProductsSourceCategoriesLoading, setMainProductsSourceCategoriesLoading] = useState(false)
   const [mainProductsVersion, setMainProductsVersion] = useState(0)
@@ -1182,6 +1276,8 @@ function App() {
         }
         if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
         if (mainProductsWithoutISBNOnly) params.set('withoutIsbn', '1')
+        if (mainProductsBillzSyncFilter !== 'all') params.set('billzSync', mainProductsBillzSyncFilter)
+        if (mainProductsInfoCompleteFilter !== 'all') params.set('infoComplete', mainProductsInfoCompleteFilter)
 
         const response = await fetch(`${API_BASE_URL}/mainProducts?${params.toString()}`, { signal: controller.signal })
         if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
@@ -1201,11 +1297,11 @@ function App() {
 
     loadMainProducts()
     return () => controller.abort()
-  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsVersion])
+  }, [activePage, mainProductsPage, mainProductsLimit, mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsBillzSyncFilter, mainProductsInfoCompleteFilter, mainProductsVersion])
 
   useEffect(() => {
     setMainProductsPage(1)
-  }, [mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsLimit])
+  }, [mainProductsSearch, selectedMainProductsSourceCategoryKeysParam, includeMainProductsWithoutCategory, mainProductsWithoutISBNOnly, mainProductsBillzSyncFilter, mainProductsInfoCompleteFilter, mainProductsLimit])
 
   useEffect(() => {
     if (activePage !== 'duplicates') return
@@ -1417,6 +1513,8 @@ function App() {
     setMainProductsSearchInput('')
     setMainProductsCategoryFilter([])
     setMainProductsWithoutISBNOnly(false)
+    setMainProductsBillzSyncFilter('all')
+    setMainProductsInfoCompleteFilter('all')
     setMainProductsLimit(DEFAULT_PRODUCTS_LIMIT)
     setSelectedMainProductIds([])
     setSelectAllFilteredMainProducts(false)
@@ -1828,6 +1926,8 @@ function App() {
             sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
             withoutCategory: includeMainProductsWithoutCategory,
             withoutIsbn: mainProductsWithoutISBNOnly,
+            billzSync: mainProductsBillzSyncFilter,
+            infoComplete: mainProductsInfoCompleteFilter,
             excludeProductIds: excludedFilteredMainProductIds
           })
         })
@@ -1907,6 +2007,8 @@ function App() {
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
           withoutCategory: includeMainProductsWithoutCategory,
           withoutIsbn: mainProductsWithoutISBNOnly,
+          billzSync: mainProductsBillzSyncFilter,
+          infoComplete: mainProductsInfoCompleteFilter,
           excludeProductIds: excludedFilteredMainProductIds
         })
       })
@@ -1969,6 +2071,8 @@ function App() {
           sourceCategoryKeys: selectedMainProductsSourceCategoryKeysParam,
           withoutCategory: includeMainProductsWithoutCategory,
           withoutIsbn: mainProductsWithoutISBNOnly,
+          billzSync: mainProductsBillzSyncFilter,
+          infoComplete: mainProductsInfoCompleteFilter,
           excludeProductIds: excludedFilteredMainProductIds
         })
       })
@@ -2031,6 +2135,8 @@ function App() {
     }
     if (includeMainProductsWithoutCategory) params.set('withoutCategory', '1')
     if (mainProductsWithoutISBNOnly) params.set('withoutIsbn', '1')
+    if (mainProductsBillzSyncFilter !== 'all') params.set('billzSync', mainProductsBillzSyncFilter)
+    if (mainProductsInfoCompleteFilter !== 'all') params.set('infoComplete', mainProductsInfoCompleteFilter)
     return params
   }
 
@@ -2078,6 +2184,8 @@ function App() {
       genreRefsJson: formatRefsJsonInput(genreRefs),
       tagNames: tagNames.join(', '),
       genreNames: genreNames.join(', '),
+      isInfoComplete: Boolean(product?.isInfoComplete),
+      description: String(product?.description || product?.annotation || ''),
       annotation: String(product?.annotation || ''),
       coverUrl: primaryCoverUrl,
       coverUrls: normalizeCoverUrls(productCoverUrls),
@@ -2275,7 +2383,9 @@ function App() {
       genreRefs,
       tagNames,
       genreNames,
-      annotation: String(form.annotation || '').trim(),
+      isInfoComplete: Boolean(form.isInfoComplete),
+      description: String(form.description || form.annotation || '').trim(),
+      annotation: String(form.annotation || form.description || '').trim(),
       coverUrl: (() => {
         const typed = normalizeImageValue(form.coverUrl)
         if (typed) return typed
@@ -2947,6 +3057,32 @@ function App() {
                 onChange={setMainProductsCategoryFilter}
                 loading={mainProductsSourceCategoriesLoading}
               />
+              <div className="filter-selects-vertical">
+                <label className="select-all">
+                  <span>Синхронизация Billz</span>
+                  <select
+                    value={normalizeBillzSyncFilter(mainProductsBillzSyncFilter)}
+                    onChange={(event) => setMainProductsBillzSyncFilter(normalizeBillzSyncFilter(event.target.value))}
+                    disabled={mainProductsActionKey !== ''}
+                  >
+                    <option value="all">Все</option>
+                    <option value="syncable">Можно синхронизировать</option>
+                    <option value="unsyncable">Нельзя синхронизировать</option>
+                  </select>
+                </label>
+                <label className="select-all">
+                  <span>Полнота инфо</span>
+                  <select
+                    value={normalizeInfoCompleteFilter(mainProductsInfoCompleteFilter)}
+                    onChange={(event) => setMainProductsInfoCompleteFilter(normalizeInfoCompleteFilter(event.target.value))}
+                    disabled={mainProductsActionKey !== ''}
+                  >
+                    <option value="all">Все</option>
+                    <option value="checked">Только отмеченные</option>
+                    <option value="unchecked">Только не отмеченные</option>
+                  </select>
+                </label>
+              </div>
               <button
                 className="btn table-btn"
                 type="button"
@@ -3056,6 +3192,7 @@ function App() {
                           const actionBusy = Boolean(mainProductsActionKey)
                           const checked = id ? (selectAllFilteredMainProducts ? !excludedFilteredMainProductIdSet.has(id) : selectedMainProductIds.includes(id)) : false
                           const selectable = Boolean(id) && !actionBusy
+                          const infoComplete = Boolean(product.isInfoComplete)
 
                           const handleRowToggle = () => {
                             if (!selectable) return
@@ -3073,7 +3210,7 @@ function App() {
                           return (
                             <tr
                               key={id || product.sourceGuidNom || product.sourceGuid || product.name}
-                              className={checked ? 'selected' : ''}
+                              className={`${checked ? 'selected' : ''} ${infoComplete ? 'info-complete' : ''}`.trim()}
                               onClick={handleRowToggle}
                               onKeyDown={handleRowKeyDown}
                               role={selectable ? 'checkbox' : undefined}
@@ -3098,7 +3235,10 @@ function App() {
                                   )}
                                 </div>
                               </td>
-                              <td>{product.name || 'Без названия'}</td>
+                              <td>
+                                {product.name || 'Без названия'}
+                                {infoComplete && <span className="table-info-complete-badge">Инфо заполнена</span>}
+                              </td>
                               <td>{product.authorNames?.join(', ') || product.authorCover || '-'}</td>
                               <td>{product.isbn || '-'}</td>
                               <td>{formatMainMetric(product.quantity, 3)}</td>
@@ -3992,6 +4132,7 @@ function MainProductCard({
 }) {
   const authors = product.authorNames?.join(', ') || product.authorCover || 'Неизвестно'
   const categoryText = Array.isArray(product.categoryPath) && product.categoryPath.length > 0 ? product.categoryPath.join(' / ') : 'Без категории'
+  const infoComplete = Boolean(product.isInfoComplete)
   const handleToggle = () => {
     if (!selectable) return
     onToggle()
@@ -4006,7 +4147,7 @@ function MainProductCard({
 
   return (
     <article
-      className={`product-card ${selectable ? 'selectable' : ''} ${checked ? 'selected' : ''}`}
+      className={`product-card ${selectable ? 'selectable' : ''} ${checked ? 'selected' : ''} ${infoComplete ? 'info-complete' : ''}`}
       onClick={handleToggle}
       onKeyDown={handleKeyDown}
       role={selectable ? 'checkbox' : undefined}
@@ -4033,6 +4174,7 @@ function MainProductCard({
       </div>
       <div className="product-info">
         <h3>{product.name || 'Без названия'}</h3>
+        {infoComplete && <span className="info-complete-badge">Инфо заполнена</span>}
         <p className="author">{authors}</p>
         <p className="meta">{product.isbn || '-'}</p>
         <p className="meta">{categoryText}</p>
@@ -4212,14 +4354,15 @@ const PRODUCT_FIELD_META = {
   guid: { label: 'GUID товара', hidden: true },
   guidNom: { label: 'GUID номенклатуры', hidden: true },
   nomcode: { label: 'Внутренний код товара', hidden: true },
-  sourceGuidNom: { label: 'GUID NOM источника' },
-  sourceGuid: { label: 'GUID источника' },
-  sourceNomcode: { label: 'NOMCODE источника' },
+  sourceGuidNom: { label: 'GUID NOM источника', hidden: true },
+  sourceGuid: { label: 'GUID источника', hidden: true },
+  sourceNomcode: { label: 'NOMCODE источника', hidden: true },
   name: { label: 'Название' },
   isbn: { label: 'ISBN' },
   isbnNormalized: { label: 'Нормализованный ISBN', hidden: true },
   authorCover: { label: 'Автор (обложка)' },
   authorNames: { label: 'Авторы' },
+  description: { label: 'Описание' },
   annotation: { label: 'Аннотация' },
   subject: { label: 'Тема' },
   subjectName: { label: 'Тема' },
@@ -4231,11 +4374,11 @@ const PRODUCT_FIELD_META = {
   seriesName: { label: 'Серия' },
   publisher: { label: 'Издатель' },
   publisherName: { label: 'Издатель' },
-  authorRefs: { label: 'Авторы' },
-  tagRefs: { label: 'Теги' },
-  genreRefs: { label: 'Жанры' },
+  authorRefs: { label: 'Авторы', hidden: true },
+  tagRefs: { label: 'Теги', hidden: true },
+  genreRefs: { label: 'Жанры', hidden: true },
   categoryId: { label: 'ID категории' },
-  categoryPath: { label: 'Путь категории' },
+  categoryPath: { label: 'Путь категории', hidden: true },
   quantity: { label: 'Количество' },
   price: { label: 'Цена' },
   billzUpdatedAt: { label: 'Обновлено в Billz' },
@@ -4248,6 +4391,7 @@ const PRODUCT_FIELD_META = {
   covers: { label: 'Все обложки' },
   coverUrl: { label: 'Главная обложка' },
   categoryIds: { label: 'Связанные ID категорий', hidden: true },
+  isInfoComplete: { label: 'Информация заполнена полностью' },
   inMainProducts: { label: 'Уже в основном каталоге' },
   syncedAt: { label: 'Синхронизировано', hidden: true },
   updatedAt: { label: 'Обновлено', hidden: true }
@@ -4329,20 +4473,21 @@ function buildProductDetailRows(product) {
     'sourceNomcode',
     'authorCover',
     'authorNames',
+    'description',
     'annotation',
     'price',
     'quantity',
     'categoryPath',
-    'subject',
     'subjectName',
-    'niche',
+    'subject',
     'nicheName',
-    'brand',
+    'niche',
     'brandName',
-    'series',
+    'brand',
     'seriesName',
-    'publisher',
+    'series',
     'publisherName',
+    'publisher',
     'authorRefs',
     'tagRefs',
     'genreRefs',
@@ -4353,6 +4498,7 @@ function buildProductDetailRows(product) {
     'ageRestriction',
     'covers',
     'coverUrl',
+    'isInfoComplete',
     'inMainProducts',
     'billzUpdatedAt',
     'createdAt',
@@ -4361,14 +4507,30 @@ function buildProductDetailRows(product) {
 
   const allKeys = Object.keys(product)
   const orderedKeys = [...new Set([...preferredOrder, ...allKeys])]
-
-  return orderedKeys
+  const rows = orderedKeys
     .filter((key) => PRODUCT_FIELD_META[key] && !PRODUCT_FIELD_META[key].hidden)
     .map((key) => ({
       key,
       name: PRODUCT_FIELD_META[key].label || key,
       value: formatDetailValue(product[key])
     }))
+
+  const uniqueRows = []
+  const labelIndex = new Map()
+
+  rows.forEach((row) => {
+    const existingIndex = labelIndex.get(row.name)
+    if (existingIndex === undefined) {
+      labelIndex.set(row.name, uniqueRows.length)
+      uniqueRows.push(row)
+      return
+    }
+    if (uniqueRows[existingIndex].value === '-' && row.value !== '-') {
+      uniqueRows[existingIndex] = row
+    }
+  })
+
+  return uniqueRows
 }
 
 function getProductImages(product) {
@@ -4406,10 +4568,6 @@ function ProductDetailsModal({ product, onClose }) {
     return '-'
   }, [product])
   const summarySeries = useMemo(() => product?.serieName || product?.seriesName || '-', [product])
-  const summaryCategory = useMemo(() => {
-    if (Array.isArray(product?.categoryPath) && product.categoryPath.length > 0) return product.categoryPath.join(' / ')
-    return '-'
-  }, [product])
 
   useEffect(() => {
     setActiveImageIndex(0)
@@ -4471,7 +4629,6 @@ function ProductDetailsModal({ product, onClose }) {
               <p><strong>Серия:</strong> {summarySeries}</p>
               <p><strong>Тема:</strong> {product?.subjectName || '-'}</p>
               <p><strong>Издатель:</strong> {product?.publisherName || '-'}</p>
-              <p><strong>Категория:</strong> {summaryCategory}</p>
               <p><strong>Жанр:</strong> {summaryGenres}</p>
               <p><strong>Возраст:</strong> {product?.ageRestriction || '-'}</p>
               <p><strong>ISBN:</strong> {product?.isbn || '-'}</p>
@@ -4502,6 +4659,9 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
   if (typeof document === 'undefined') return null
   const [categoryInput, setCategoryInput] = useState('')
   const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
+  const [externalImageUrlInput, setExternalImageUrlInput] = useState('')
+  const [externalImageUrlChecking, setExternalImageUrlChecking] = useState(false)
+  const [externalImageUrlError, setExternalImageUrlError] = useState('')
   const categoryInputRef = useRef(null)
   const imageInputRef = useRef(null)
 
@@ -4589,6 +4749,62 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
     if (!coverUrls.includes(url)) {
       onChange('coverUrls', normalizeCoverUrls([url, ...coverUrls]))
     }
+  }
+
+  const handleMainCoverUrlBlur = async () => {
+    const normalizedMain = normalizeImageValue(form?.coverUrl || '')
+    if (!normalizedMain) return
+    const result = await validateExternalImageUrl(normalizedMain)
+    if (!result.ok || !result.url) {
+      setExternalImageUrlError(`Главная обложка: ${result.error || 'Неверный URL изображения.'}`)
+      return
+    }
+    setExternalImageUrlError('')
+    onChange('coverUrl', result.url)
+    if (!coverUrls.includes(result.url)) {
+      onChange('coverUrls', normalizeCoverUrls([result.url, ...coverUrls]))
+    }
+  }
+
+  const handleAddExternalImageUrls = async () => {
+    const candidates = parseImageUrlsInput(externalImageUrlInput)
+    if (candidates.length === 0) {
+      setExternalImageUrlError('Введите хотя бы один URL изображения.')
+      return
+    }
+
+    setExternalImageUrlChecking(true)
+    setExternalImageUrlError('')
+    const accepted = []
+    const rejected = []
+    for (const candidate of candidates) {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await validateExternalImageUrl(candidate)
+      if (result.ok && result.url) {
+        accepted.push(result.url)
+      } else {
+        rejected.push(`${candidate}: ${result.error || 'Неверный URL изображения.'}`)
+      }
+    }
+
+    if (accepted.length > 0) {
+      const next = normalizeCoverUrls([...coverUrls, ...accepted])
+      onChange('coverUrls', next)
+      const currentMain = normalizeImageValue(form?.coverUrl || '')
+      if (!currentMain || !next.includes(currentMain)) {
+        onChange('coverUrl', next[0] || '')
+      }
+      setExternalImageUrlInput('')
+    }
+
+    if (rejected.length > 0) {
+      const first = rejected[0]
+      const rest = rejected.length - 1
+      setExternalImageUrlError(rest > 0 ? `${first} (+${rest} ошибок)` : first)
+    } else {
+      setExternalImageUrlError('')
+    }
+    setExternalImageUrlChecking(false)
   }
 
   return createPortal(
@@ -4684,8 +4900,43 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
 
             <label className="main-product-field">
               <span>URL обложки</span>
-              <input type="text" value={form.coverUrl} onChange={(e) => onChange('coverUrl', e.target.value)} />
+              <input
+                type="text"
+                value={form.coverUrl}
+                onChange={(e) => onChange('coverUrl', e.target.value)}
+                onBlur={handleMainCoverUrlBlur}
+              />
               <small className="main-product-field-hint">Путь или URL главного изображения (поддерживаются `/uploads/...` и `https://...`).</small>
+            </label>
+
+            <label className="main-product-field full">
+              <span>Внешние URL изображений</span>
+              <div className="main-product-upload-row">
+                <input
+                  type="text"
+                  value={externalImageUrlInput}
+                  onChange={(e) => setExternalImageUrlInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== 'Enter') return
+                    e.preventDefault()
+                    if (loading || uploadingImages || externalImageUrlChecking) return
+                    handleAddExternalImageUrls()
+                  }}
+                  placeholder="https://site.com/image1.jpg, https://site.com/image2.png"
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleAddExternalImageUrls}
+                  disabled={loading || uploadingImages || externalImageUrlChecking}
+                >
+                  {externalImageUrlChecking ? 'Проверка...' : 'Добавить URL'}
+                </button>
+              </div>
+              <small className="main-product-field-hint">Можно добавить несколько URL через запятую, `;`, `|` или новую строку.</small>
+              {externalImageUrlError && (
+                <small className="main-product-upload-status error">{externalImageUrlError}</small>
+              )}
             </label>
 
             <label className="main-product-field full">
@@ -4796,17 +5047,6 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
               <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
             </label>
 
-            <label className="main-product-field full">
-              <span>Путь категории</span>
-              <input
-                type="text"
-                value={form.categoryPath}
-                onChange={(e) => onChange('categoryPath', e.target.value)}
-                placeholder="Категория / Подкатегория / ..."
-              />
-              <small className="main-product-field-hint">Можно вводить через ` / ` или запятую.</small>
-            </label>
-
             <label className="main-product-field">
               <span>Количество</span>
               <input type="number" step="0.001" value={form.quantity} onChange={(e) => onChange('quantity', e.target.value)} />
@@ -4817,49 +5057,9 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
               <input type="number" step="0.01" value={form.price} onChange={(e) => onChange('price', e.target.value)} />
             </label>
 
-            <label className="main-product-field">
-              <span>Исходный GUID NOM</span>
-              <input type="text" value={form.sourceGuidNom} onChange={(e) => onChange('sourceGuidNom', e.target.value)} />
-            </label>
-
-            <label className="main-product-field">
-              <span>Исходный GUID</span>
-              <input type="text" value={form.sourceGuid} onChange={(e) => onChange('sourceGuid', e.target.value)} />
-            </label>
-
             <label className="main-product-field full">
-              <span>Исходный NOMCODE</span>
-              <input type="text" value={form.sourceNomcode} onChange={(e) => onChange('sourceNomcode', e.target.value)} />
-            </label>
-
-            <label className="main-product-field full">
-              <span>Авторы (refs JSON)</span>
-              <textarea
-                value={form.authorRefsJson}
-                onChange={(e) => onChange('authorRefsJson', e.target.value)}
-                rows={4}
-                placeholder='[{"guid":"...","name":"..."}]'
-              />
-            </label>
-
-            <label className="main-product-field full">
-              <span>Теги (refs JSON)</span>
-              <textarea
-                value={form.tagRefsJson}
-                onChange={(e) => onChange('tagRefsJson', e.target.value)}
-                rows={4}
-                placeholder='[{"guid":"...","name":"..."}]'
-              />
-            </label>
-
-            <label className="main-product-field full">
-              <span>Жанры (refs JSON)</span>
-              <textarea
-                value={form.genreRefsJson}
-                onChange={(e) => onChange('genreRefsJson', e.target.value)}
-                rows={4}
-                placeholder='[{"guid":"...","name":"..."}]'
-              />
+              <span>Описание</span>
+              <textarea value={form.description} onChange={(e) => onChange('description', e.target.value)} rows={4} />
             </label>
 
             <label className="main-product-field full">
@@ -4868,6 +5068,15 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             </label>
 
             <div className="main-product-actions">
+              <label className="main-product-complete-toggle">
+                <input
+                  type="checkbox"
+                  checked={Boolean(form.isInfoComplete)}
+                  onChange={(e) => onChange('isInfoComplete', Boolean(e.target.checked))}
+                  disabled={loading || uploadingImages}
+                />
+                <span>Информация по товару заполнена полностью</span>
+              </label>
               <button type="button" className="btn" onClick={onClose} disabled={loading || uploadingImages}>
                 Отмена
               </button>

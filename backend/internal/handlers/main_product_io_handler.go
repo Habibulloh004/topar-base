@@ -65,6 +65,8 @@ var mainProductColumns = []mainProductColumn{
 	{Key: "isbn", Header: "isbn"},
 	{Key: "authorCover", Header: "author_cover"},
 	{Key: "authorNames", Header: "author_names"},
+	{Key: "isInfoComplete", Header: "is_info_complete"},
+	{Key: "description", Header: "description"},
 	{Key: "annotation", Header: "annotation"},
 	{Key: "coverUrl", Header: "cover_url"},
 	{Key: "ageRestriction", Header: "age_restriction"},
@@ -93,6 +95,8 @@ type createMainProductRequest struct {
 	GenreRefs      []models.EksmoProductGenreRef  `json:"genreRefs"`
 	TagNames       []string                       `json:"tagNames"`
 	GenreNames     []string                       `json:"genreNames"`
+	IsInfoComplete bool                           `json:"isInfoComplete"`
+	Description    string                         `json:"description"`
 	Annotation     string                         `json:"annotation"`
 	CoverURL       string                         `json:"coverUrl"`
 	CoverURLs      []string                       `json:"coverUrls"`
@@ -561,6 +565,8 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 	if pages < 0 {
 		pages = 0
 	}
+	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Annotation))
+	annotation := strings.TrimSpace(firstNonEmpty(req.Annotation, req.Description))
 
 	return models.MainProduct{
 		Name:           strings.TrimSpace(req.Name),
@@ -572,7 +578,9 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 		GenreRefs:      genreRefs,
 		TagNames:       tagNames,
 		GenreNames:     genreNames,
-		Annotation:     strings.TrimSpace(req.Annotation),
+		IsInfoComplete: req.IsInfoComplete,
+		Description:    description,
+		Annotation:     annotation,
 		CoverURL:       primaryCover,
 		Covers:         covers,
 		Pages:          pages,
@@ -777,6 +785,8 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 		Search:          strings.TrimSpace(c.Query("search")),
 		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
 		WithoutISBN:     parseBoolQuery(c, "withoutIsbn", false),
+		BillzSyncable:   parseBillzSyncFilterMode(strings.TrimSpace(c.Query("billzSync"))),
+		InfoComplete:    parseInfoCompleteFilterMode(strings.TrimSpace(c.Query("infoComplete"))),
 	}
 
 	categoryIDs := parseObjectIDsCSV(c.Query("categoryIds"))
@@ -1036,9 +1046,16 @@ func parseMainProductRows(rows [][]string) ([]models.MainProduct, error) {
 			readMainProductCell(row, headerIndex, "authorNames"),
 			readMainProductCell(row, headerIndex, "author"),
 		))
+		product.IsInfoComplete = parseMainProductBool(readMainProductCell(row, headerIndex, "isInfoComplete"))
+		product.Description = firstNonEmpty(
+			readMainProductCell(row, headerIndex, "description"),
+			readMainProductCell(row, headerIndex, "annotation"),
+			readMainProductCell(row, headerIndex, "shortDescription"),
+		)
 		product.Annotation = firstNonEmpty(
 			readMainProductCell(row, headerIndex, "annotation"),
 			readMainProductCell(row, headerIndex, "shortDescription"),
+			product.Description,
 		)
 		product.CoverURL = extractPrimaryLink(readMainProductCell(row, headerIndex, "coverUrl"))
 		product.AgeRestriction = readMainProductCell(row, headerIndex, "ageRestriction")
@@ -1107,9 +1124,15 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 			index["author"] = i
 		case "authornames", "authors":
 			index["authorNames"] = i
+		case "isinfocomplete", "infocomplete", "fullinfo", "isfullinfo":
+			index["isInfoComplete"] = i
+		case "полнаяинформация", "инфополная", "полнотаинформации":
+			index["isInfoComplete"] = i
 		case "автор":
 			index["author"] = i
-		case "annotation", "description":
+		case "description", "описание":
+			index["description"] = i
+		case "annotation":
 			index["annotation"] = i
 		case "краткоеописание", "короткоеописание", "shortdescription":
 			index["shortDescription"] = i
@@ -1252,6 +1275,16 @@ func parseMainProductFloat(value string) float64 {
 	return parsed
 }
 
+func parseMainProductBool(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(stripUTF8BOM(value)))
+	switch normalized {
+	case "1", "true", "yes", "y", "on", "да", "истина":
+		return true
+	default:
+		return false
+	}
+}
+
 func splitMainProductList(value string) []string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1293,6 +1326,14 @@ func mainProductCSVRow(product models.MainProduct) []string {
 			row = append(row, product.AuthorCover)
 		case "authorNames":
 			row = append(row, strings.Join(product.AuthorNames, " | "))
+		case "isInfoComplete":
+			if product.IsInfoComplete {
+				row = append(row, "1")
+			} else {
+				row = append(row, "0")
+			}
+		case "description":
+			row = append(row, product.Description)
 		case "annotation":
 			row = append(row, product.Annotation)
 		case "coverUrl":

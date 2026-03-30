@@ -704,6 +704,8 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 		Search:          searchQuery,
 		WithoutCategory: parseBoolQuery(c, "withoutCategory", false),
 		WithoutISBN:     parseBoolQuery(c, "withoutIsbn", false),
+		BillzSyncable:   parseBillzSyncFilterMode(strings.TrimSpace(c.Query("billzSync"))),
+		InfoComplete:    parseInfoCompleteFilterMode(strings.TrimSpace(c.Query("infoComplete"))),
 	}
 
 	if params.Limit > 200 {
@@ -791,6 +793,8 @@ type DeleteMainProductsRequest struct {
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
 	WithoutISBN        bool     `json:"withoutIsbn"`
+	BillzSync          string   `json:"billzSync"`
+	InfoComplete       string   `json:"infoComplete"`
 	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
@@ -802,6 +806,8 @@ type LinkMainProductsCategoryRequest struct {
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
 	WithoutISBN        bool     `json:"withoutIsbn"`
+	BillzSync          string   `json:"billzSync"`
+	InfoComplete       string   `json:"infoComplete"`
 	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
@@ -812,6 +818,8 @@ type UnlinkMainProductsCategoryRequest struct {
 	SourceCategoryKeys string   `json:"sourceCategoryKeys"`
 	WithoutCategory    bool     `json:"withoutCategory"`
 	WithoutISBN        bool     `json:"withoutIsbn"`
+	BillzSync          string   `json:"billzSync"`
+	InfoComplete       string   `json:"infoComplete"`
 	ApplyToFiltered    bool     `json:"applyToFiltered"`
 }
 
@@ -944,6 +952,8 @@ func (h *EksmoProductHandler) DeleteMainProducts(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			BillzSyncable:   parseBillzSyncFilterMode(req.BillzSync),
+			InfoComplete:    parseInfoCompleteFilterMode(req.InfoComplete),
 			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
@@ -1132,6 +1142,8 @@ func (h *EksmoProductHandler) LinkMainProductsCategory(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			BillzSyncable:   parseBillzSyncFilterMode(req.BillzSync),
+			InfoComplete:    parseInfoCompleteFilterMode(req.InfoComplete),
 			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
@@ -1226,6 +1238,8 @@ func (h *EksmoProductHandler) UnlinkMainProductsCategory(c *fiber.Ctx) error {
 			Search:          strings.TrimSpace(req.Search),
 			WithoutCategory: req.WithoutCategory,
 			WithoutISBN:     req.WithoutISBN,
+			BillzSyncable:   parseBillzSyncFilterMode(req.BillzSync),
+			InfoComplete:    parseInfoCompleteFilterMode(req.InfoComplete),
 			ExcludeIDs:      parseObjectIDsSlice(req.ExcludeProductIDs),
 		}
 		sourceCategoryPaths, otherCategoryPaths, sourceDomains, includeWithoutCategory, includeEksmo := parseMainProductSourceCategoryFilter(req.SourceCategoryKeys)
@@ -1859,6 +1873,38 @@ func parseBoolQuery(c *fiber.Ctx, key string, fallback bool) bool {
 		return false
 	default:
 		return fallback
+	}
+}
+
+func parseInfoCompleteFilterMode(raw string) *bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", "all":
+		return nil
+	case "checked", "true", "1", "yes":
+		v := true
+		return &v
+	case "unchecked", "false", "0", "no":
+		v := false
+		return &v
+	default:
+		return nil
+	}
+}
+
+func parseBillzSyncFilterMode(raw string) *bool {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "", "all":
+		return nil
+	case "syncable", "can", "true", "1", "yes":
+		v := true
+		return &v
+	case "unsyncable", "cannot", "false", "0", "no":
+		v := false
+		return &v
+	default:
+		return nil
 	}
 }
 

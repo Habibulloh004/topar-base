@@ -802,6 +802,31 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	setOrUnsetString("paperType", doc.PaperType)
 	setOrUnsetString("bindingType", doc.BindingType)
 	setOrUnsetString("ageRestriction", doc.AgeRestriction)
+	setOrUnsetString("characteristics", doc.Characteristics)
+	setOrUnsetString("boardGameType", doc.BoardGameType)
+	setOrUnsetString("productType", doc.ProductType)
+	setOrUnsetString("targetAudience", doc.TargetAudience)
+	if doc.MinPlayers <= 0 {
+		unsetDoc["minPlayers"] = ""
+	} else {
+		setDoc["minPlayers"] = doc.MinPlayers
+	}
+	if doc.MaxPlayers <= 0 {
+		unsetDoc["maxPlayers"] = ""
+	} else {
+		setDoc["maxPlayers"] = doc.MaxPlayers
+	}
+	if doc.MinGameDurationMinutes <= 0 {
+		unsetDoc["minGameDurationMinutes"] = ""
+	} else {
+		setDoc["minGameDurationMinutes"] = doc.MinGameDurationMinutes
+	}
+	if doc.MaxGameDurationMinutes <= 0 {
+		unsetDoc["maxGameDurationMinutes"] = ""
+	} else {
+		setDoc["maxGameDurationMinutes"] = doc.MaxGameDurationMinutes
+	}
+	setOrUnsetString("material", doc.Material)
 	setOrUnsetString("subjectName", doc.SubjectName)
 	setOrUnsetString("nicheName", doc.NicheName)
 	setOrUnsetString("brandName", doc.BrandName)
@@ -2000,6 +2025,23 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 	product.PaperType = strings.TrimSpace(product.PaperType)
 	product.BindingType = strings.TrimSpace(product.BindingType)
 	product.AgeRestriction = strings.TrimSpace(product.AgeRestriction)
+	product.Characteristics = strings.TrimSpace(product.Characteristics)
+	product.BoardGameType = strings.TrimSpace(product.BoardGameType)
+	product.ProductType = strings.TrimSpace(product.ProductType)
+	product.TargetAudience = strings.TrimSpace(product.TargetAudience)
+	if product.MinPlayers < 0 {
+		product.MinPlayers = 0
+	}
+	if product.MaxPlayers < 0 {
+		product.MaxPlayers = 0
+	}
+	if product.MinGameDurationMinutes < 0 {
+		product.MinGameDurationMinutes = 0
+	}
+	if product.MaxGameDurationMinutes < 0 {
+		product.MaxGameDurationMinutes = 0
+	}
+	product.Material = strings.TrimSpace(product.Material)
 	product.SubjectName = strings.TrimSpace(product.SubjectName)
 	product.NicheName = strings.TrimSpace(product.NicheName)
 	product.BrandName = strings.TrimSpace(product.BrandName)

@@ -17,24 +17,33 @@ type MainProduct struct {
 	SourceNomCode   string             `bson:"sourceNomcode,omitempty" json:"sourceNomcode,omitempty"`
 	ISBN            string             `bson:"isbn,omitempty" json:"isbn,omitempty"`
 
-	Name           string                  `bson:"name" json:"name"`
-	AuthorCover    string                  `bson:"authorCover,omitempty" json:"authorCover,omitempty"`
-	AuthorNames    []string                `bson:"authorNames,omitempty" json:"authorNames,omitempty"`
-	AuthorRefs     []EksmoProductAuthorRef `bson:"authorRefs,omitempty" json:"authorRefs,omitempty"`
-	TagRefs        []EksmoProductTagRef    `bson:"tagRefs,omitempty" json:"tagRefs,omitempty"`
-	GenreRefs      []EksmoProductGenreRef  `bson:"genreRefs,omitempty" json:"genreRefs,omitempty"`
-	TagNames       []string                `bson:"tagNames,omitempty" json:"tagNames,omitempty"`
-	GenreNames     []string                `bson:"genreNames,omitempty" json:"genreNames,omitempty"`
-	IsInfoComplete bool                    `bson:"isInfoComplete,omitempty" json:"isInfoComplete,omitempty"`
-	Description    string                  `bson:"description,omitempty" json:"description,omitempty"`
-	Annotation     string                  `bson:"annotation,omitempty" json:"annotation,omitempty"`
-	CoverURL       string                  `bson:"coverUrl,omitempty" json:"coverUrl,omitempty"`
-	Covers         map[string]string       `bson:"covers,omitempty" json:"covers,omitempty"`
-	Pages          int                     `bson:"pages,omitempty" json:"pages,omitempty"`
-	Format         string                  `bson:"format,omitempty" json:"format,omitempty"`
-	PaperType      string                  `bson:"paperType,omitempty" json:"paperType,omitempty"`
-	BindingType    string                  `bson:"bindingType,omitempty" json:"bindingType,omitempty"`
-	AgeRestriction string                  `bson:"ageRestriction,omitempty" json:"ageRestriction,omitempty"`
+	Name                   string                  `bson:"name" json:"name"`
+	AuthorCover            string                  `bson:"authorCover,omitempty" json:"authorCover,omitempty"`
+	AuthorNames            []string                `bson:"authorNames,omitempty" json:"authorNames,omitempty"`
+	AuthorRefs             []EksmoProductAuthorRef `bson:"authorRefs,omitempty" json:"authorRefs,omitempty"`
+	TagRefs                []EksmoProductTagRef    `bson:"tagRefs,omitempty" json:"tagRefs,omitempty"`
+	GenreRefs              []EksmoProductGenreRef  `bson:"genreRefs,omitempty" json:"genreRefs,omitempty"`
+	TagNames               []string                `bson:"tagNames,omitempty" json:"tagNames,omitempty"`
+	GenreNames             []string                `bson:"genreNames,omitempty" json:"genreNames,omitempty"`
+	IsInfoComplete         bool                    `bson:"isInfoComplete,omitempty" json:"isInfoComplete,omitempty"`
+	Description            string                  `bson:"description,omitempty" json:"description,omitempty"`
+	Annotation             string                  `bson:"annotation,omitempty" json:"annotation,omitempty"`
+	CoverURL               string                  `bson:"coverUrl,omitempty" json:"coverUrl,omitempty"`
+	Covers                 map[string]string       `bson:"covers,omitempty" json:"covers,omitempty"`
+	Pages                  int                     `bson:"pages,omitempty" json:"pages,omitempty"`
+	Format                 string                  `bson:"format,omitempty" json:"format,omitempty"`
+	PaperType              string                  `bson:"paperType,omitempty" json:"paperType,omitempty"`
+	BindingType            string                  `bson:"bindingType,omitempty" json:"bindingType,omitempty"`
+	AgeRestriction         string                  `bson:"ageRestriction,omitempty" json:"ageRestriction,omitempty"`
+	Characteristics        string                  `bson:"characteristics,omitempty" json:"characteristics,omitempty"`
+	BoardGameType          string                  `bson:"boardGameType,omitempty" json:"boardGameType,omitempty"`
+	ProductType            string                  `bson:"productType,omitempty" json:"productType,omitempty"`
+	TargetAudience         string                  `bson:"targetAudience,omitempty" json:"targetAudience,omitempty"`
+	MinPlayers             int                     `bson:"minPlayers,omitempty" json:"minPlayers,omitempty"`
+	MaxPlayers             int                     `bson:"maxPlayers,omitempty" json:"maxPlayers,omitempty"`
+	MinGameDurationMinutes int                     `bson:"minGameDurationMinutes,omitempty" json:"minGameDurationMinutes,omitempty"`
+	MaxGameDurationMinutes int                     `bson:"maxGameDurationMinutes,omitempty" json:"maxGameDurationMinutes,omitempty"`
+	Material               string                  `bson:"material,omitempty" json:"material,omitempty"`
 
 	SubjectName   string `bson:"subjectName,omitempty" json:"subjectName,omitempty"`
 	NicheName     string `bson:"nicheName,omitempty" json:"nicheName,omitempty"`

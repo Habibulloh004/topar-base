@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,11 +66,27 @@ var mainProductColumns = []mainProductColumn{
 	{Key: "isbn", Header: "isbn"},
 	{Key: "authorCover", Header: "author_cover"},
 	{Key: "authorNames", Header: "author_names"},
+	{Key: "tagNames", Header: "tag_names"},
+	{Key: "genreNames", Header: "genre_names"},
 	{Key: "isInfoComplete", Header: "is_info_complete"},
 	{Key: "description", Header: "description"},
 	{Key: "annotation", Header: "annotation"},
 	{Key: "coverUrl", Header: "cover_url"},
+	{Key: "coverUrls", Header: "cover_urls"},
 	{Key: "ageRestriction", Header: "age_restriction"},
+	{Key: "pages", Header: "pages"},
+	{Key: "format", Header: "format"},
+	{Key: "paperType", Header: "paper_type"},
+	{Key: "bindingType", Header: "binding_type"},
+	{Key: "characteristics", Header: "characteristics"},
+	{Key: "boardGameType", Header: "board_game_type"},
+	{Key: "productType", Header: "product_type"},
+	{Key: "targetAudience", Header: "target_audience"},
+	{Key: "minPlayers", Header: "min_players"},
+	{Key: "maxPlayers", Header: "max_players"},
+	{Key: "minGameDurationMinutes", Header: "min_game_duration_minutes"},
+	{Key: "maxGameDurationMinutes", Header: "max_game_duration_minutes"},
+	{Key: "material", Header: "material"},
 	{Key: "subjectName", Header: "subject_name"},
 	{Key: "nicheName", Header: "niche_name"},
 	{Key: "brandName", Header: "brand_name"},
@@ -86,37 +103,46 @@ var mainProductColumns = []mainProductColumn{
 }
 
 type createMainProductRequest struct {
-	Name           string                         `json:"name"`
-	ISBN           string                         `json:"isbn"`
-	AuthorCover    string                         `json:"authorCover"`
-	AuthorNames    []string                       `json:"authorNames"`
-	AuthorRefs     []models.EksmoProductAuthorRef `json:"authorRefs"`
-	TagRefs        []models.EksmoProductTagRef    `json:"tagRefs"`
-	GenreRefs      []models.EksmoProductGenreRef  `json:"genreRefs"`
-	TagNames       []string                       `json:"tagNames"`
-	GenreNames     []string                       `json:"genreNames"`
-	IsInfoComplete bool                           `json:"isInfoComplete"`
-	Description    string                         `json:"description"`
-	Annotation     string                         `json:"annotation"`
-	CoverURL       string                         `json:"coverUrl"`
-	CoverURLs      []string                       `json:"coverUrls"`
-	Pages          int                            `json:"pages"`
-	Format         string                         `json:"format"`
-	PaperType      string                         `json:"paperType"`
-	BindingType    string                         `json:"bindingType"`
-	AgeRestriction string                         `json:"ageRestriction"`
-	SubjectName    string                         `json:"subjectName"`
-	NicheName      string                         `json:"nicheName"`
-	BrandName      string                         `json:"brandName"`
-	SeriesName     string                         `json:"seriesName"`
-	PublisherName  string                         `json:"publisherName"`
-	Quantity       float64                        `json:"quantity"`
-	Price          float64                        `json:"price"`
-	CategoryID     string                         `json:"categoryId"`
-	CategoryPath   []string                       `json:"categoryPath"`
-	SourceGUIDNOM  string                         `json:"sourceGuidNom"`
-	SourceGUID     string                         `json:"sourceGuid"`
-	SourceNomCode  string                         `json:"sourceNomcode"`
+	Name                   string                         `json:"name"`
+	ISBN                   string                         `json:"isbn"`
+	AuthorCover            string                         `json:"authorCover"`
+	AuthorNames            []string                       `json:"authorNames"`
+	AuthorRefs             []models.EksmoProductAuthorRef `json:"authorRefs"`
+	TagRefs                []models.EksmoProductTagRef    `json:"tagRefs"`
+	GenreRefs              []models.EksmoProductGenreRef  `json:"genreRefs"`
+	TagNames               []string                       `json:"tagNames"`
+	GenreNames             []string                       `json:"genreNames"`
+	IsInfoComplete         bool                           `json:"isInfoComplete"`
+	Description            string                         `json:"description"`
+	Annotation             string                         `json:"annotation"`
+	CoverURL               string                         `json:"coverUrl"`
+	CoverURLs              []string                       `json:"coverUrls"`
+	Pages                  int                            `json:"pages"`
+	Format                 string                         `json:"format"`
+	PaperType              string                         `json:"paperType"`
+	BindingType            string                         `json:"bindingType"`
+	AgeRestriction         string                         `json:"ageRestriction"`
+	Characteristics        string                         `json:"characteristics"`
+	BoardGameType          string                         `json:"boardGameType"`
+	ProductType            string                         `json:"productType"`
+	TargetAudience         string                         `json:"targetAudience"`
+	MinPlayers             int                            `json:"minPlayers"`
+	MaxPlayers             int                            `json:"maxPlayers"`
+	MinGameDurationMinutes int                            `json:"minGameDurationMinutes"`
+	MaxGameDurationMinutes int                            `json:"maxGameDurationMinutes"`
+	Material               string                         `json:"material"`
+	SubjectName            string                         `json:"subjectName"`
+	NicheName              string                         `json:"nicheName"`
+	BrandName              string                         `json:"brandName"`
+	SeriesName             string                         `json:"seriesName"`
+	PublisherName          string                         `json:"publisherName"`
+	Quantity               float64                        `json:"quantity"`
+	Price                  float64                        `json:"price"`
+	CategoryID             string                         `json:"categoryId"`
+	CategoryPath           []string                       `json:"categoryPath"`
+	SourceGUIDNOM          string                         `json:"sourceGuidNom"`
+	SourceGUID             string                         `json:"sourceGuid"`
+	SourceNomCode          string                         `json:"sourceNomcode"`
 }
 
 func (h *EksmoProductHandler) CreateMainProduct(c *fiber.Ctx) error {
@@ -565,41 +591,66 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 	if pages < 0 {
 		pages = 0
 	}
+	minPlayers := req.MinPlayers
+	if minPlayers < 0 {
+		minPlayers = 0
+	}
+	maxPlayers := req.MaxPlayers
+	if maxPlayers < 0 {
+		maxPlayers = 0
+	}
+	minGameDurationMinutes := req.MinGameDurationMinutes
+	if minGameDurationMinutes < 0 {
+		minGameDurationMinutes = 0
+	}
+	maxGameDurationMinutes := req.MaxGameDurationMinutes
+	if maxGameDurationMinutes < 0 {
+		maxGameDurationMinutes = 0
+	}
 	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Annotation))
 	annotation := strings.TrimSpace(firstNonEmpty(req.Annotation, req.Description))
 
 	return models.MainProduct{
-		Name:           strings.TrimSpace(req.Name),
-		ISBN:           strings.TrimSpace(req.ISBN),
-		AuthorCover:    strings.TrimSpace(req.AuthorCover),
-		AuthorNames:    authorNames,
-		AuthorRefs:     authorRefs,
-		TagRefs:        tagRefs,
-		GenreRefs:      genreRefs,
-		TagNames:       tagNames,
-		GenreNames:     genreNames,
-		IsInfoComplete: req.IsInfoComplete,
-		Description:    description,
-		Annotation:     annotation,
-		CoverURL:       primaryCover,
-		Covers:         covers,
-		Pages:          pages,
-		Format:         strings.TrimSpace(req.Format),
-		PaperType:      strings.TrimSpace(req.PaperType),
-		BindingType:    strings.TrimSpace(req.BindingType),
-		AgeRestriction: strings.TrimSpace(req.AgeRestriction),
-		SubjectName:    strings.TrimSpace(req.SubjectName),
-		NicheName:      strings.TrimSpace(req.NicheName),
-		BrandName:      strings.TrimSpace(req.BrandName),
-		SeriesName:     strings.TrimSpace(req.SeriesName),
-		PublisherName:  strings.TrimSpace(req.PublisherName),
-		Quantity:       req.Quantity,
-		Price:          req.Price,
-		CategoryID:     categoryID,
-		CategoryPath:   categoryPath,
-		SourceGUIDNOM:  strings.TrimSpace(req.SourceGUIDNOM),
-		SourceGUID:     strings.TrimSpace(req.SourceGUID),
-		SourceNomCode:  strings.TrimSpace(req.SourceNomCode),
+		Name:                   strings.TrimSpace(req.Name),
+		ISBN:                   strings.TrimSpace(req.ISBN),
+		AuthorCover:            strings.TrimSpace(req.AuthorCover),
+		AuthorNames:            authorNames,
+		AuthorRefs:             authorRefs,
+		TagRefs:                tagRefs,
+		GenreRefs:              genreRefs,
+		TagNames:               tagNames,
+		GenreNames:             genreNames,
+		IsInfoComplete:         req.IsInfoComplete,
+		Description:            description,
+		Annotation:             annotation,
+		CoverURL:               primaryCover,
+		Covers:                 covers,
+		Pages:                  pages,
+		Format:                 strings.TrimSpace(req.Format),
+		PaperType:              strings.TrimSpace(req.PaperType),
+		BindingType:            strings.TrimSpace(req.BindingType),
+		AgeRestriction:         strings.TrimSpace(req.AgeRestriction),
+		Characteristics:        strings.TrimSpace(req.Characteristics),
+		BoardGameType:          strings.TrimSpace(req.BoardGameType),
+		ProductType:            strings.TrimSpace(req.ProductType),
+		TargetAudience:         strings.TrimSpace(req.TargetAudience),
+		MinPlayers:             minPlayers,
+		MaxPlayers:             maxPlayers,
+		MinGameDurationMinutes: minGameDurationMinutes,
+		MaxGameDurationMinutes: maxGameDurationMinutes,
+		Material:               strings.TrimSpace(req.Material),
+		SubjectName:            strings.TrimSpace(req.SubjectName),
+		NicheName:              strings.TrimSpace(req.NicheName),
+		BrandName:              strings.TrimSpace(req.BrandName),
+		SeriesName:             strings.TrimSpace(req.SeriesName),
+		PublisherName:          strings.TrimSpace(req.PublisherName),
+		Quantity:               req.Quantity,
+		Price:                  req.Price,
+		CategoryID:             categoryID,
+		CategoryPath:           categoryPath,
+		SourceGUIDNOM:          strings.TrimSpace(req.SourceGUIDNOM),
+		SourceGUID:             strings.TrimSpace(req.SourceGUID),
+		SourceNomCode:          strings.TrimSpace(req.SourceNomCode),
 	}, nil
 }
 
@@ -1046,6 +1097,8 @@ func parseMainProductRows(rows [][]string) ([]models.MainProduct, error) {
 			readMainProductCell(row, headerIndex, "authorNames"),
 			readMainProductCell(row, headerIndex, "author"),
 		))
+		product.TagNames = splitMainProductList(readMainProductCell(row, headerIndex, "tagNames"))
+		product.GenreNames = splitMainProductList(readMainProductCell(row, headerIndex, "genreNames"))
 		product.IsInfoComplete = parseMainProductBool(readMainProductCell(row, headerIndex, "isInfoComplete"))
 		product.Description = firstNonEmpty(
 			readMainProductCell(row, headerIndex, "description"),
@@ -1057,8 +1110,26 @@ func parseMainProductRows(rows [][]string) ([]models.MainProduct, error) {
 			readMainProductCell(row, headerIndex, "shortDescription"),
 			product.Description,
 		)
+		coverURLs := splitMainProductLinkList(readMainProductCell(row, headerIndex, "coverUrls"))
 		product.CoverURL = extractPrimaryLink(readMainProductCell(row, headerIndex, "coverUrl"))
+		if product.CoverURL == "" && len(coverURLs) > 0 {
+			product.CoverURL = coverURLs[0]
+		}
+		product.Covers = buildMainProductCoversMap(coverURLs)
 		product.AgeRestriction = readMainProductCell(row, headerIndex, "ageRestriction")
+		product.Pages = parseMainProductInt(readMainProductCell(row, headerIndex, "pages"))
+		product.Format = readMainProductCell(row, headerIndex, "format")
+		product.PaperType = readMainProductCell(row, headerIndex, "paperType")
+		product.BindingType = readMainProductCell(row, headerIndex, "bindingType")
+		product.Characteristics = readMainProductCell(row, headerIndex, "characteristics")
+		product.BoardGameType = readMainProductCell(row, headerIndex, "boardGameType")
+		product.ProductType = readMainProductCell(row, headerIndex, "productType")
+		product.TargetAudience = readMainProductCell(row, headerIndex, "targetAudience")
+		product.MinPlayers = parseMainProductInt(readMainProductCell(row, headerIndex, "minPlayers"))
+		product.MaxPlayers = parseMainProductInt(readMainProductCell(row, headerIndex, "maxPlayers"))
+		product.MinGameDurationMinutes = parseMainProductInt(readMainProductCell(row, headerIndex, "minGameDurationMinutes"))
+		product.MaxGameDurationMinutes = parseMainProductInt(readMainProductCell(row, headerIndex, "maxGameDurationMinutes"))
+		product.Material = readMainProductCell(row, headerIndex, "material")
 		product.SubjectName = firstNonEmpty(
 			readMainProductCell(row, headerIndex, "subjectName"),
 			readMainProductCell(row, headerIndex, "category"),
@@ -1124,6 +1195,10 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 			index["author"] = i
 		case "authornames", "authors":
 			index["authorNames"] = i
+		case "tagnames", "tags", "теги":
+			index["tagNames"] = i
+		case "genrenames", "genres", "жанры":
+			index["genreNames"] = i
 		case "isinfocomplete", "infocomplete", "fullinfo", "isfullinfo":
 			index["isInfoComplete"] = i
 		case "полнаяинформация", "инфополная", "полнотаинформации":
@@ -1138,12 +1213,68 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 			index["shortDescription"] = i
 		case "coverurl", "image", "imageurl":
 			index["coverUrl"] = i
+		case "coverurls", "covers", "imagelinks", "coverlinks":
+			index["coverUrls"] = i
+		case "ссылкинаобложки", "ссылкинаизображения", "всеобложки", "всеизображения":
+			index["coverUrls"] = i
 		case "фотоилиссылкинафото", "фото", "ссылканафото", "ссылкинафото", "изображение", "photophotolinks", "photo", "photolinks":
 			index["coverUrl"] = i
 		case "agerestriction", "age":
 			index["ageRestriction"] = i
 		case "возрастноеограничение", "возврастноеограничение":
 			index["ageRestriction"] = i
+		case "pages", "pagecount":
+			index["pages"] = i
+		case "страницы", "количествостраниц":
+			index["pages"] = i
+		case "format":
+			index["format"] = i
+		case "формат":
+			index["format"] = i
+		case "papertype", "paper":
+			index["paperType"] = i
+		case "типбумаги", "бумага":
+			index["paperType"] = i
+		case "bindingtype", "binding":
+			index["bindingType"] = i
+		case "типпереплета", "переплет":
+			index["bindingType"] = i
+		case "characteristics":
+			index["characteristics"] = i
+		case "характеристики", "характеристика":
+			index["characteristics"] = i
+		case "boardgametype":
+			index["boardGameType"] = i
+		case "виднастольнойигры":
+			index["boardGameType"] = i
+		case "producttype", "type":
+			index["productType"] = i
+		case "тип":
+			index["productType"] = i
+		case "targetaudience":
+			index["targetAudience"] = i
+		case "целеваяаудитория":
+			index["targetAudience"] = i
+		case "minplayers":
+			index["minPlayers"] = i
+		case "минимальноечислоигроков":
+			index["minPlayers"] = i
+		case "maxplayers":
+			index["maxPlayers"] = i
+		case "максимальноечислоигроков":
+			index["maxPlayers"] = i
+		case "mingamedurationminutes":
+			index["minGameDurationMinutes"] = i
+		case "минимальнаяпродолжительностьпартиимин", "минимальнаядлительностьпартиимин":
+			index["minGameDurationMinutes"] = i
+		case "maxgamedurationminutes":
+			index["maxGameDurationMinutes"] = i
+		case "максимальнаяпродолжительностьпартиимин", "максимальнаядлительностьпартиимин":
+			index["maxGameDurationMinutes"] = i
+		case "material":
+			index["material"] = i
+		case "материал":
+			index["material"] = i
 		case "subjectname", "subject":
 			index["subjectName"] = i
 		case "категория":
@@ -1275,6 +1406,14 @@ func parseMainProductFloat(value string) float64 {
 	return parsed
 }
 
+func parseMainProductInt(value string) int {
+	parsed := parseMainProductFloat(value)
+	if parsed <= 0 {
+		return 0
+	}
+	return int(parsed)
+}
+
 func parseMainProductBool(value string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(stripUTF8BOM(value)))
 	switch normalized {
@@ -1308,6 +1447,53 @@ func splitMainProductPath(value string) []string {
 	return cleanStringSlice(strings.Split(value, ","))
 }
 
+func splitMainProductLinkList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		switch r {
+		case '\n', '\r', '|', ';', ',':
+			return true
+		default:
+			return false
+		}
+	})
+	return cleanStringSlice(parts)
+}
+
+func buildMainProductCoverURLs(primary string, covers map[string]string) []string {
+	result := []string{}
+	seen := map[string]struct{}{}
+	push := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+
+	push(primary)
+	if len(covers) == 0 {
+		return result
+	}
+
+	keys := make([]string, 0, len(covers))
+	for key := range covers {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		push(covers[key])
+	}
+	return result
+}
+
 func mainProductCSVRow(product models.MainProduct) []string {
 	row := make([]string, 0, len(mainProductColumns))
 	for _, col := range mainProductColumns {
@@ -1326,6 +1512,10 @@ func mainProductCSVRow(product models.MainProduct) []string {
 			row = append(row, product.AuthorCover)
 		case "authorNames":
 			row = append(row, strings.Join(product.AuthorNames, " | "))
+		case "tagNames":
+			row = append(row, strings.Join(product.TagNames, " | "))
+		case "genreNames":
+			row = append(row, strings.Join(product.GenreNames, " | "))
 		case "isInfoComplete":
 			if product.IsInfoComplete {
 				row = append(row, "1")
@@ -1338,8 +1528,56 @@ func mainProductCSVRow(product models.MainProduct) []string {
 			row = append(row, product.Annotation)
 		case "coverUrl":
 			row = append(row, product.CoverURL)
+		case "coverUrls":
+			row = append(row, strings.Join(buildMainProductCoverURLs(product.CoverURL, product.Covers), " | "))
 		case "ageRestriction":
 			row = append(row, product.AgeRestriction)
+		case "pages":
+			if product.Pages > 0 {
+				row = append(row, strconv.Itoa(product.Pages))
+			} else {
+				row = append(row, "")
+			}
+		case "format":
+			row = append(row, product.Format)
+		case "paperType":
+			row = append(row, product.PaperType)
+		case "bindingType":
+			row = append(row, product.BindingType)
+		case "characteristics":
+			row = append(row, product.Characteristics)
+		case "boardGameType":
+			row = append(row, product.BoardGameType)
+		case "productType":
+			row = append(row, product.ProductType)
+		case "targetAudience":
+			row = append(row, product.TargetAudience)
+		case "minPlayers":
+			if product.MinPlayers > 0 {
+				row = append(row, strconv.Itoa(product.MinPlayers))
+			} else {
+				row = append(row, "")
+			}
+		case "maxPlayers":
+			if product.MaxPlayers > 0 {
+				row = append(row, strconv.Itoa(product.MaxPlayers))
+			} else {
+				row = append(row, "")
+			}
+		case "minGameDurationMinutes":
+			if product.MinGameDurationMinutes > 0 {
+				row = append(row, strconv.Itoa(product.MinGameDurationMinutes))
+			} else {
+				row = append(row, "")
+			}
+		case "maxGameDurationMinutes":
+			if product.MaxGameDurationMinutes > 0 {
+				row = append(row, strconv.Itoa(product.MaxGameDurationMinutes))
+			} else {
+				row = append(row, "")
+			}
+		case "material":
+			row = append(row, product.Material)
 		case "subjectName":
 			row = append(row, product.SubjectName)
 		case "nicheName":

@@ -151,6 +151,15 @@ const EMPTY_MAIN_PRODUCT_FORM = {
   paperType: '',
   bindingType: '',
   ageRestriction: '',
+  characteristics: '',
+  boardGameType: '',
+  productType: '',
+  targetAudience: '',
+  minPlayers: '',
+  maxPlayers: '',
+  minGameDurationMinutes: '',
+  maxGameDurationMinutes: '',
+  material: '',
   subjectName: '',
   nicheName: '',
   brandName: '',
@@ -2194,6 +2203,15 @@ function App() {
       paperType: String(product?.paperType || ''),
       bindingType: String(product?.bindingType || ''),
       ageRestriction: String(product?.ageRestriction || ''),
+      characteristics: String(product?.characteristics || ''),
+      boardGameType: String(product?.boardGameType || ''),
+      productType: String(product?.productType || ''),
+      targetAudience: String(product?.targetAudience || ''),
+      minPlayers: formatOptionalNumberForInput(product?.minPlayers),
+      maxPlayers: formatOptionalNumberForInput(product?.maxPlayers),
+      minGameDurationMinutes: formatOptionalNumberForInput(product?.minGameDurationMinutes),
+      maxGameDurationMinutes: formatOptionalNumberForInput(product?.maxGameDurationMinutes),
+      material: String(product?.material || ''),
       subjectName: String(product?.subjectName || ''),
       nicheName: String(product?.nicheName || ''),
       brandName: String(product?.brandName || ''),
@@ -2403,6 +2421,15 @@ function App() {
       paperType: String(form.paperType || '').trim(),
       bindingType: String(form.bindingType || '').trim(),
       ageRestriction: String(form.ageRestriction || '').trim(),
+      characteristics: String(form.characteristics || '').trim(),
+      boardGameType: String(form.boardGameType || '').trim(),
+      productType: String(form.productType || '').trim(),
+      targetAudience: String(form.targetAudience || '').trim(),
+      minPlayers: parseOptionalInteger(form.minPlayers),
+      maxPlayers: parseOptionalInteger(form.maxPlayers),
+      minGameDurationMinutes: parseOptionalInteger(form.minGameDurationMinutes),
+      maxGameDurationMinutes: parseOptionalInteger(form.maxGameDurationMinutes),
+      material: String(form.material || '').trim(),
       subjectName: String(form.subjectName || '').trim(),
       nicheName: String(form.nicheName || '').trim(),
       brandName: String(form.brandName || '').trim(),
@@ -4362,6 +4389,8 @@ const PRODUCT_FIELD_META = {
   isbnNormalized: { label: 'Нормализованный ISBN', hidden: true },
   authorCover: { label: 'Автор (обложка)' },
   authorNames: { label: 'Авторы' },
+  tagNames: { label: 'Теги' },
+  genreNames: { label: 'Жанры' },
   description: { label: 'Описание' },
   annotation: { label: 'Аннотация' },
   subject: { label: 'Тема' },
@@ -4388,6 +4417,15 @@ const PRODUCT_FIELD_META = {
   paperType: { label: 'Тип бумаги' },
   bindingType: { label: 'Тип переплета' },
   ageRestriction: { label: 'Возрастное ограничение' },
+  characteristics: { label: 'Характеристики' },
+  boardGameType: { label: 'Вид настольной игры' },
+  productType: { label: 'Тип' },
+  targetAudience: { label: 'Целевая аудитория' },
+  minPlayers: { label: 'Минимальное число игроков' },
+  maxPlayers: { label: 'Максимальное число игроков' },
+  minGameDurationMinutes: { label: 'Минимальная продолжительность партии, мин.' },
+  maxGameDurationMinutes: { label: 'Максимальная продолжительность партии, мин.' },
+  material: { label: 'Материал' },
   covers: { label: 'Все обложки' },
   coverUrl: { label: 'Главная обложка' },
   categoryIds: { label: 'Связанные ID категорий', hidden: true },
@@ -4473,6 +4511,8 @@ function buildProductDetailRows(product) {
     'sourceNomcode',
     'authorCover',
     'authorNames',
+    'tagNames',
+    'genreNames',
     'description',
     'annotation',
     'price',
@@ -4496,6 +4536,15 @@ function buildProductDetailRows(product) {
     'paperType',
     'bindingType',
     'ageRestriction',
+    'characteristics',
+    'boardGameType',
+    'productType',
+    'targetAudience',
+    'minPlayers',
+    'maxPlayers',
+    'minGameDurationMinutes',
+    'maxGameDurationMinutes',
+    'material',
     'covers',
     'coverUrl',
     'isInfoComplete',
@@ -5020,6 +5069,63 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             <label className="main-product-field">
               <span>Тип переплета</span>
               <input type="text" value={form.bindingType} onChange={(e) => onChange('bindingType', e.target.value)} />
+            </label>
+
+            <label className="main-product-field full">
+              <span>Характеристики</span>
+              <textarea value={form.characteristics} onChange={(e) => onChange('characteristics', e.target.value)} rows={4} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Вид настольной игры</span>
+              <input type="text" value={form.boardGameType} onChange={(e) => onChange('boardGameType', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Тип</span>
+              <input type="text" value={form.productType} onChange={(e) => onChange('productType', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Целевая аудитория</span>
+              <input type="text" value={form.targetAudience} onChange={(e) => onChange('targetAudience', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Минимальное число игроков</span>
+              <input type="number" min="0" step="1" value={form.minPlayers} onChange={(e) => onChange('minPlayers', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Максимальное число игроков</span>
+              <input type="number" min="0" step="1" value={form.maxPlayers} onChange={(e) => onChange('maxPlayers', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Минимальная продолжительность партии, мин.</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={form.minGameDurationMinutes}
+                onChange={(e) => onChange('minGameDurationMinutes', e.target.value)}
+              />
+            </label>
+
+            <label className="main-product-field">
+              <span>Максимальная продолжительность партии, мин.</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={form.maxGameDurationMinutes}
+                onChange={(e) => onChange('maxGameDurationMinutes', e.target.value)}
+              />
+            </label>
+
+            <label className="main-product-field">
+              <span>Материал</span>
+              <input type="text" value={form.material} onChange={(e) => onChange('material', e.target.value)} />
             </label>
 
             <label className="main-product-field">

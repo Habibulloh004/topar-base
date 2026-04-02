@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 function resolveApiBaseUrl() {
@@ -26,6 +26,9 @@ const MAIN_PRODUCTS_LIMIT_STORAGE_KEY = 'topar_dashboard_main_products_limit'
 const MAIN_PRODUCTS_VIEW_MODE_STORAGE_KEY = 'topar_dashboard_main_products_view_mode'
 const MAIN_PRODUCTS_CARD_COLUMNS_STORAGE_KEY = 'topar_dashboard_main_products_card_columns'
 const MAIN_PRODUCTS_WITHOUT_ISBN_ONLY_STORAGE_KEY = 'topar_dashboard_main_products_without_isbn_only'
+const MAIN_PRODUCT_DRAFTS_STORAGE_KEY = 'topar_dashboard_main_product_drafts_v1'
+const MAIN_PRODUCT_DRAFTS_LIMIT = 100
+const MAIN_PRODUCT_DRAFT_SAVE_DEBOUNCE_MS = 250
 const SEARCH_DEBOUNCE_MS = 300
 const META_CACHE_STORAGE_KEY = 'topar_dashboard_meta_cache_v1'
 const META_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -131,6 +134,8 @@ function writeDashboardSetting(key, value) {
   } catch (_) {}
 }
 
+let mainProductDraftsMemoryCache = null
+
 const EMPTY_MAIN_PRODUCT_FORM = {
   name: '',
   isbn: '',
@@ -172,6 +177,118 @@ const EMPTY_MAIN_PRODUCT_FORM = {
   sourceGuidNom: '',
   sourceGuid: '',
   sourceNomcode: ''
+}
+
+function normalizeMainProductFormDraft(form) {
+  const normalized = {}
+  const source = form && typeof form === 'object' ? form : {}
+  const schemaEntries = Object.entries(EMPTY_MAIN_PRODUCT_FORM)
+
+  for (const [field, defaultValue] of schemaEntries) {
+    const rawValue = source[field]
+    if (Array.isArray(defaultValue)) {
+      if (field === 'coverUrls') {
+        normalized[field] = normalizeCoverUrls(rawValue)
+      } else if (Array.isArray(rawValue)) {
+        normalized[field] = rawValue.map((item) => String(item || ''))
+      } else {
+        normalized[field] = [...defaultValue]
+      }
+      continue
+    }
+    if (typeof defaultValue === 'boolean') {
+      normalized[field] = Boolean(rawValue)
+      continue
+    }
+    normalized[field] = rawValue == null ? String(defaultValue) : String(rawValue)
+  }
+
+  return normalized
+}
+
+function loadMainProductDraftEntriesFromStorage() {
+  if (typeof window === 'undefined') return []
+  if (Array.isArray(mainProductDraftsMemoryCache)) return mainProductDraftsMemoryCache
+
+  try {
+    const raw = window.localStorage.getItem(MAIN_PRODUCT_DRAFTS_STORAGE_KEY)
+    if (!raw) {
+      mainProductDraftsMemoryCache = []
+      return mainProductDraftsMemoryCache
+    }
+
+    const parsed = JSON.parse(raw)
+    const items = Array.isArray(parsed?.items) ? parsed.items : []
+    const seen = new Set()
+    const normalizedItems = []
+    for (const item of items) {
+      const productId = String(item?.productId || '').trim()
+      if (!isMongoObjectId(productId) || seen.has(productId)) continue
+      seen.add(productId)
+      normalizedItems.push({
+        productId,
+        productName: String(item?.productName || '').trim(),
+        updatedAt: Number(item?.updatedAt || 0),
+        form: normalizeMainProductFormDraft(item?.form || EMPTY_MAIN_PRODUCT_FORM)
+      })
+      if (normalizedItems.length >= MAIN_PRODUCT_DRAFTS_LIMIT) break
+    }
+
+    mainProductDraftsMemoryCache = normalizedItems
+    return mainProductDraftsMemoryCache
+  } catch (_) {
+    mainProductDraftsMemoryCache = []
+    return mainProductDraftsMemoryCache
+  }
+}
+
+function writeMainProductDraftEntriesToStorage(entries) {
+  const limited = Array.isArray(entries) ? entries.slice(0, MAIN_PRODUCT_DRAFTS_LIMIT) : []
+  mainProductDraftsMemoryCache = limited
+  if (typeof window === 'undefined') return
+
+  try {
+    window.localStorage.setItem(
+      MAIN_PRODUCT_DRAFTS_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        items: limited
+      })
+    )
+  } catch (_) {}
+}
+
+function upsertMainProductDraftEntry(productId, productName, form) {
+  const id = String(productId || '').trim()
+  if (!isMongoObjectId(id)) return
+
+  const normalizedForm = normalizeMainProductFormDraft(form)
+  const now = Date.now()
+  const prev = loadMainProductDraftEntriesFromStorage()
+  const next = prev.filter((entry) => entry.productId !== id)
+  next.unshift({
+    productId: id,
+    productName: String(productName || normalizedForm.name || '').trim(),
+    updatedAt: now,
+    form: normalizedForm
+  })
+  writeMainProductDraftEntriesToStorage(next)
+}
+
+function readMainProductDraftEntry(productId) {
+  const id = String(productId || '').trim()
+  if (!isMongoObjectId(id)) return null
+  const entries = loadMainProductDraftEntriesFromStorage()
+  return entries.find((entry) => entry.productId === id) || null
+}
+
+function removeMainProductDraftEntry(productId) {
+  const id = String(productId || '').trim()
+  if (!isMongoObjectId(id)) return
+  const prev = loadMainProductDraftEntriesFromStorage()
+  const next = prev.filter((entry) => entry.productId !== id)
+  if (next.length === prev.length) return
+  writeMainProductDraftEntriesToStorage(next)
 }
 
 const FRONTEND_UPLOAD_DEBUG = String(import.meta.env.VITE_UPLOAD_DEBUG || '1') !== '0'
@@ -609,6 +726,35 @@ function sanitizeTagGenreRefs(values) {
     .filter(Boolean)
 }
 
+function buildAuthorRefsFromNames(values) {
+  if (!Array.isArray(values) || values.length === 0) return []
+  return values.map((name) => ({
+    guid: '',
+    code: '',
+    name: String(name || '').trim(),
+    isWriter: false,
+    isTranslator: false,
+    isArtist: false
+  }))
+}
+
+function buildTagGenreRefsFromNames(values) {
+  if (!Array.isArray(values) || values.length === 0) return []
+  return values.map((name) => ({
+    guid: '',
+    name: String(name || '').trim()
+  }))
+}
+
+function normalizedNamesSignature(values) {
+  if (!Array.isArray(values) || values.length === 0) return ''
+  return values
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('\u001f')
+}
+
 function extractRefNames(values) {
   if (!Array.isArray(values) || values.length === 0) return []
   return values
@@ -842,8 +988,28 @@ function App() {
   const [toast, setToast] = useState(null)
   const [detailsProduct, setDetailsProduct] = useState(null)
   const mainProductsImportInputRef = useRef(null)
+  const mainProductDraftSaveTimerRef = useRef(null)
+  const mainProductDraftSnapshotRef = useRef('')
+  const mainProductFormRef = useRef(mainProductForm)
+  const editingMainProductIdRef = useRef(editingMainProductId)
   const productsSearchPending = normalizedProductsSearchInput !== search
   const mainProductsSearchPending = normalizedMainProductsSearchInput !== mainProductsSearch
+  const persistMainProductDraftNow = useCallback(() => {
+    const productId = String(editingMainProductIdRef.current || '').trim()
+    if (!isMongoObjectId(productId)) return
+    const normalizedForm = normalizeMainProductFormDraft(mainProductFormRef.current)
+    upsertMainProductDraftEntry(productId, normalizedForm.name, normalizedForm)
+    mainProductDraftSnapshotRef.current = `${productId}:${JSON.stringify(normalizedForm)}`
+  }, [])
+
+  useEffect(() => {
+    mainProductFormRef.current = mainProductForm
+  }, [mainProductForm])
+
+  useEffect(() => {
+    editingMainProductIdRef.current = editingMainProductId
+  }, [editingMainProductId])
+
   const selectedAuthorGuids = useMemo(() => {
     if (!Array.isArray(authorFilter) || authorFilter.length === 0) return []
     const selectedNameSet = new Set(authorFilter)
@@ -979,6 +1145,43 @@ function App() {
   }, [mainProductsWithoutISBNOnly])
 
   useEffect(() => {
+    if (!mainProductEditModalOpen) return
+    const productId = String(editingMainProductId || '').trim()
+    if (!isMongoObjectId(productId)) return
+
+    const normalizedForm = normalizeMainProductFormDraft(mainProductForm)
+    const snapshot = `${productId}:${JSON.stringify(normalizedForm)}`
+    if (snapshot === mainProductDraftSnapshotRef.current) return
+
+    if (mainProductDraftSaveTimerRef.current) {
+      window.clearTimeout(mainProductDraftSaveTimerRef.current)
+      mainProductDraftSaveTimerRef.current = null
+    }
+
+    mainProductDraftSaveTimerRef.current = window.setTimeout(() => {
+      upsertMainProductDraftEntry(productId, normalizedForm.name, normalizedForm)
+      mainProductDraftSnapshotRef.current = snapshot
+      mainProductDraftSaveTimerRef.current = null
+    }, MAIN_PRODUCT_DRAFT_SAVE_DEBOUNCE_MS)
+
+    return () => {
+      if (mainProductDraftSaveTimerRef.current) {
+        window.clearTimeout(mainProductDraftSaveTimerRef.current)
+        mainProductDraftSaveTimerRef.current = null
+      }
+    }
+  }, [mainProductEditModalOpen, editingMainProductId, mainProductForm])
+
+  useEffect(() => {
+    if (!mainProductEditModalOpen) return
+    const handleBeforeUnload = () => {
+      persistMainProductDraftNow()
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [mainProductEditModalOpen, persistMainProductDraftNow])
+
+  useEffect(() => {
     if (!toast) return
     const timer = setTimeout(() => setToast(null), 3000)
     return () => clearTimeout(timer)
@@ -1033,8 +1236,13 @@ function App() {
     const handleEscape = (event) => {
       if (event.key !== 'Escape') return
       if (mainProductCreating || mainProductEditing || mainProductImageUploading) return
+      if (mainProductEditModalOpen) {
+        persistMainProductDraftNow()
+      }
       setMainProductModalOpen(false)
       setMainProductEditModalOpen(false)
+      setEditingMainProductId('')
+      setMainProductImageUploading(false)
     }
     document.body.style.overflow = 'hidden'
     document.addEventListener('keydown', handleEscape)
@@ -1042,7 +1250,7 @@ function App() {
       document.body.style.overflow = previousOverflow
       document.removeEventListener('keydown', handleEscape)
     }
-  }, [mainProductModalOpen, mainProductEditModalOpen, mainProductCreating, mainProductEditing, mainProductImageUploading])
+  }, [mainProductModalOpen, mainProductEditModalOpen, mainProductCreating, mainProductEditing, mainProductImageUploading, persistMainProductDraftNow])
 
   useEffect(() => {
     const handleSearchShortcut = (event) => {
@@ -1890,6 +2098,7 @@ function App() {
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
       setMainProductsStatus('Товар удален из основной модели.')
+      removeMainProductDraftEntry(productID)
       setSelectedMainProductIds((prev) => prev.filter((id) => id !== productID))
       setMainProductsVersion((prev) => prev + 1)
     } catch (err) {
@@ -1960,6 +2169,11 @@ function App() {
       }
 
       if (deleted > 0) {
+        if (!deleteAllFiltered) {
+          for (const productID of productIDs) {
+            removeMainProductDraftEntry(productID)
+          }
+        }
         setSelectedMainProductIds((prev) => prev.filter((id) => !productIDs.includes(id)))
         if (deleteAllFiltered) {
           setSelectAllFilteredMainProducts(false)
@@ -2151,6 +2365,11 @@ function App() {
 
   const openMainProductModal = () => {
     const defaultCategoryId = selectedMainProductsCategories.length === 1 ? selectedMainProductsCategories[0].id : ''
+    if (mainProductDraftSaveTimerRef.current) {
+      window.clearTimeout(mainProductDraftSaveTimerRef.current)
+      mainProductDraftSaveTimerRef.current = null
+    }
+    mainProductDraftSnapshotRef.current = ''
     setEditingMainProductId('')
     setMainProductImageUploading(false)
     setMainProductsStatus('')
@@ -2182,8 +2401,7 @@ function App() {
       : extractRefNames(genreRefs)
 
     setMainProductImageUploading(false)
-    setMainProductsStatus('')
-    setMainProductForm({
+    const baseForm = {
       name: String(product?.name || ''),
       isbn: String(product?.isbn || ''),
       authorCover: String(product?.authorCover || ''),
@@ -2224,7 +2442,24 @@ function App() {
       sourceGuidNom: String(product?.sourceGuidNom || ''),
       sourceGuid: String(product?.sourceGuid || ''),
       sourceNomcode: String(product?.sourceNomcode || '')
-    })
+    }
+
+    const draftEntry = readMainProductDraftEntry(productID)
+    const restoredForm = draftEntry
+      ? {
+          ...baseForm,
+          ...normalizeMainProductFormDraft(draftEntry.form || EMPTY_MAIN_PRODUCT_FORM)
+        }
+      : baseForm
+
+    setMainProductsStatus(draftEntry ? 'Восстановлен локальный черновик товара.' : '')
+    setMainProductForm(restoredForm)
+    upsertMainProductDraftEntry(productID, restoredForm.name, restoredForm)
+    mainProductDraftSnapshotRef.current = `${productID}:${JSON.stringify(normalizeMainProductFormDraft(restoredForm))}`
+    if (mainProductDraftSaveTimerRef.current) {
+      window.clearTimeout(mainProductDraftSaveTimerRef.current)
+      mainProductDraftSaveTimerRef.current = null
+    }
     setEditingMainProductId(productID)
     setMainProductEditModalOpen(true)
   }
@@ -2384,12 +2619,39 @@ function App() {
   }
 
   const buildMainProductPayload = (form) => {
-    const authorRefs = sanitizeAuthorRefs(parseRefsJsonInput(form.authorRefsJson, 'Авторы'))
-    const tagRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.tagRefsJson, 'Теги'))
-    const genreRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.genreRefsJson, 'Жанры'))
     const authorNames = splitCommaValue(form.authorNames)
     const tagNames = splitCommaValue(form.tagNames)
     const genreNames = splitCommaValue(form.genreNames)
+    const parsedAuthorRefs = sanitizeAuthorRefs(parseRefsJsonInput(form.authorRefsJson, 'Авторы'))
+    const parsedTagRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.tagRefsJson, 'Теги'))
+    const parsedGenreRefs = sanitizeTagGenreRefs(parseRefsJsonInput(form.genreRefsJson, 'Жанры'))
+
+    const authorRefs = (() => {
+      if (authorNames.length === 0) return []
+      if (parsedAuthorRefs.length === 0) return buildAuthorRefsFromNames(authorNames)
+      const refsSignature = normalizedNamesSignature(extractRefNames(parsedAuthorRefs))
+      const namesSignature = normalizedNamesSignature(authorNames)
+      if (refsSignature === namesSignature) return parsedAuthorRefs
+      return buildAuthorRefsFromNames(authorNames)
+    })()
+
+    const tagRefs = (() => {
+      if (tagNames.length === 0) return []
+      if (parsedTagRefs.length === 0) return buildTagGenreRefsFromNames(tagNames)
+      const refsSignature = normalizedNamesSignature(extractRefNames(parsedTagRefs))
+      const namesSignature = normalizedNamesSignature(tagNames)
+      if (refsSignature === namesSignature) return parsedTagRefs
+      return buildTagGenreRefsFromNames(tagNames)
+    })()
+
+    const genreRefs = (() => {
+      if (genreNames.length === 0) return []
+      if (parsedGenreRefs.length === 0) return buildTagGenreRefsFromNames(genreNames)
+      const refsSignature = normalizedNamesSignature(extractRefNames(parsedGenreRefs))
+      const namesSignature = normalizedNamesSignature(genreNames)
+      if (refsSignature === namesSignature) return parsedGenreRefs
+      return buildTagGenreRefsFromNames(genreNames)
+    })()
 
     return {
       name: String(form.name || '').trim(),
@@ -2561,6 +2823,12 @@ function App() {
       }
 
       setMainProductsStatus('Основной товар успешно обновлен.')
+      removeMainProductDraftEntry(editingMainProductId)
+      mainProductDraftSnapshotRef.current = ''
+      if (mainProductDraftSaveTimerRef.current) {
+        window.clearTimeout(mainProductDraftSaveTimerRef.current)
+        mainProductDraftSaveTimerRef.current = null
+      }
       setMainProductEditModalOpen(false)
       setEditingMainProductId('')
       setMainProductForm(EMPTY_MAIN_PRODUCT_FORM)
@@ -3475,6 +3743,7 @@ function App() {
           onChange={handleMainProductFormChange}
           onClose={() => {
             if (mainProductEditing || mainProductImageUploading) return
+            persistMainProductDraftNow()
             setMainProductEditModalOpen(false)
             setEditingMainProductId('')
             setMainProductImageUploading(false)
@@ -5071,6 +5340,16 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
               <input type="text" value={form.bindingType} onChange={(e) => onChange('bindingType', e.target.value)} />
             </label>
 
+            <label className="main-product-field">
+              <span>Издатель</span>
+              <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Серия</span>
+              <input type="text" value={form.seriesName} onChange={(e) => onChange('seriesName', e.target.value)} />
+            </label>
+
             <label className="main-product-field full">
               <span>Характеристики</span>
               <textarea value={form.characteristics} onChange={(e) => onChange('characteristics', e.target.value)} rows={4} />
@@ -5141,16 +5420,6 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             <label className="main-product-field">
               <span>Бренд</span>
               <input type="text" value={form.brandName} onChange={(e) => onChange('brandName', e.target.value)} />
-            </label>
-
-            <label className="main-product-field">
-              <span>Серия</span>
-              <input type="text" value={form.seriesName} onChange={(e) => onChange('seriesName', e.target.value)} />
-            </label>
-
-            <label className="main-product-field">
-              <span>Издатель</span>
-              <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
             </label>
 
             <label className="main-product-field">

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -18,15 +20,24 @@ const (
 	cacheNamespaceEksmoProductsMeta       = "eksmoProductsMeta"
 	cacheNamespaceMainProducts            = "mainProducts"
 	cacheKeyPrefix                        = "topar:api-cache:"
+
+	redisCacheLookupTimeout = 200 * time.Millisecond
+	redisCacheWriteTimeout  = 200 * time.Millisecond
+	redisCacheScanTimeout   = 3 * time.Second
+	redisCacheDeleteTimeout = 3 * time.Second
+	redisCacheScanCount     = int64(1000)
+	redisCacheDeleteBatch   = 500
+	redisCacheDeletePasses  = 5
 )
 
 func (h *EksmoProductHandler) tryServeCachedJSON(c *fiber.Ctx, namespace string) (bool, error) {
 	if h.redisClient == nil || strings.ToUpper(c.Method()) != fiber.MethodGet {
 		return false, nil
 	}
+	setNoStoreCacheHeaders(c)
 
 	key := buildRedisCacheKey(namespace, c)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), redisCacheLookupTimeout)
 	defer cancel()
 
 	data, err := h.redisClient.Get(ctx, key).Bytes()
@@ -42,6 +53,7 @@ func (h *EksmoProductHandler) tryServeCachedJSON(c *fiber.Ctx, namespace string)
 }
 
 func (h *EksmoProductHandler) respondJSONWithCache(c *fiber.Ctx, namespace string, payload interface{}) error {
+	setNoStoreCacheHeaders(c)
 	if h.redisClient == nil || strings.ToUpper(c.Method()) != fiber.MethodGet {
 		return c.JSON(payload)
 	}
@@ -56,7 +68,7 @@ func (h *EksmoProductHandler) respondJSONWithCache(c *fiber.Ctx, namespace strin
 		ttl = 0
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), redisCacheWriteTimeout)
 	defer cancel()
 
 	_ = h.redisClient.Set(ctx, buildRedisCacheKey(namespace, c), encoded, ttl).Err()
@@ -91,27 +103,68 @@ func deleteRedisPatternByRedis(redisClient *redis.Client, pattern string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	keys := make([]string, 0, 512)
-	iter := redisClient.Scan(ctx, 0, pattern, 500).Iterator()
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
-		if len(keys) >= 500 {
-			_ = redisClient.Del(ctx, keys...).Err()
-			keys = keys[:0]
+	totalDeleted := 0
+	for pass := 1; pass <= redisCacheDeletePasses; pass++ {
+		deletedInPass, err := deleteRedisPatternPass(redisClient, pattern)
+		if err != nil {
+			log.Printf("warning: redis cache invalidation pass failed for pattern %q: %v", pattern, err)
+			return
+		}
+		totalDeleted += deletedInPass
+		if deletedInPass == 0 {
+			break
 		}
 	}
-	if len(keys) > 0 {
-		_ = redisClient.Del(ctx, keys...).Err()
+
+	if totalDeleted > 0 {
+		log.Printf("redis cache invalidated: pattern=%s deleted=%d", pattern, totalDeleted)
 	}
+}
+
+func deleteRedisPatternPass(redisClient *redis.Client, pattern string) (int, error) {
+	var cursor uint64
+	deleted := 0
+
+	for {
+		scanCtx, scanCancel := context.WithTimeout(context.Background(), redisCacheScanTimeout)
+		keys, nextCursor, err := redisClient.Scan(scanCtx, cursor, pattern, redisCacheScanCount).Result()
+		scanCancel()
+		if err != nil {
+			return deleted, err
+		}
+
+		for start := 0; start < len(keys); start += redisCacheDeleteBatch {
+			end := start + redisCacheDeleteBatch
+			if end > len(keys) {
+				end = len(keys)
+			}
+			batch := keys[start:end]
+
+			deleteCtx, deleteCancel := context.WithTimeout(context.Background(), redisCacheDeleteTimeout)
+			deleteErr := redisClient.Unlink(deleteCtx, batch...).Err()
+			if deleteErr != nil {
+				deleteErr = redisClient.Del(deleteCtx, batch...).Err()
+			}
+			deleteCancel()
+			if deleteErr != nil {
+				return deleted, deleteErr
+			}
+			deleted += len(batch)
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	return deleted, nil
 }
 
 func buildRedisCacheKey(namespace string, c *fiber.Ctx) string {
 	queryPairs := make([]string, 0, len(c.Queries()))
 	for key, value := range c.Queries() {
-		queryPairs = append(queryPairs, fmt.Sprintf("%s=%s", key, value))
+		queryPairs = append(queryPairs, fmt.Sprintf("%s=%s", url.QueryEscape(key), url.QueryEscape(value)))
 	}
 	sort.Strings(queryPairs)
 
@@ -121,4 +174,10 @@ func buildRedisCacheKey(namespace string, c *fiber.Ctx) string {
 	}
 
 	return fmt.Sprintf("%s%s:%s:%s", cacheKeyPrefix, namespace, c.Path(), queryPart)
+}
+
+func setNoStoreCacheHeaders(c *fiber.Ctx) {
+	c.Set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
+	c.Set("Pragma", "no-cache")
+	c.Set("Expires", "0")
 }

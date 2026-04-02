@@ -756,6 +756,11 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 			"totalPages": totalPages,
 		},
 	}
+	if searchQuery != "" {
+		setNoStoreCacheHeaders(c)
+		c.Set("X-Cache", "BYPASS")
+		return c.JSON(payload)
+	}
 	return h.respondJSONWithCache(c, cacheNamespaceMainProducts, payload)
 }
 

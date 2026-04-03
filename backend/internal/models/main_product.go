@@ -45,11 +45,13 @@ type MainProduct struct {
 	MaxGameDurationMinutes int                     `bson:"maxGameDurationMinutes,omitempty" json:"maxGameDurationMinutes,omitempty"`
 	Material               string                  `bson:"material,omitempty" json:"material,omitempty"`
 
-	SubjectName   string `bson:"subjectName,omitempty" json:"subjectName,omitempty"`
-	NicheName     string `bson:"nicheName,omitempty" json:"nicheName,omitempty"`
-	BrandName     string `bson:"brandName,omitempty" json:"brandName,omitempty"`
-	SeriesName    string `bson:"seriesName,omitempty" json:"seriesName,omitempty"`
-	PublisherName string `bson:"publisherName,omitempty" json:"publisherName,omitempty"`
+	SubjectName     string `bson:"subjectName,omitempty" json:"subjectName,omitempty"`
+	NicheName       string `bson:"nicheName,omitempty" json:"nicheName,omitempty"`
+	BrandName       string `bson:"brandName,omitempty" json:"brandName,omitempty"`
+	SeriesName      string `bson:"seriesName,omitempty" json:"seriesName,omitempty"`
+	PublicationYear int    `bson:"publicationYear,omitempty" json:"publicationYear,omitempty"`
+	ProductWeight   string `bson:"productWeight,omitempty" json:"productWeight,omitempty"`
+	PublisherName   string `bson:"publisherName,omitempty" json:"publisherName,omitempty"`
 
 	ISBNNormalized string     `bson:"isbnNormalized,omitempty" json:"-"`
 	Quantity       float64    `bson:"quantity,omitempty" json:"quantity,omitempty"`

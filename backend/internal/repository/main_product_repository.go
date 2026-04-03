@@ -270,6 +270,15 @@ type MainProductBillzSyncUpdate struct {
 	Price          float64
 }
 
+type MainProductDuplicateScanRecord struct {
+	ID             primitive.ObjectID `bson:"_id"`
+	ISBN           string             `bson:"isbn"`
+	ISBNNormalized string             `bson:"isbnNormalized"`
+	Barcode        string             `bson:"barcode"`
+	Code           string             `bson:"code"`
+	SourceNomCode  string             `bson:"sourceNomcode"`
+}
+
 func (r *MainProductRepository) ListWithFilters(ctx context.Context, params MainProductFilterParams) ([]models.MainProduct, int64, error) {
 	if params.Page < 1 {
 		params.Page = 1
@@ -831,6 +840,12 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	setOrUnsetString("nicheName", doc.NicheName)
 	setOrUnsetString("brandName", doc.BrandName)
 	setOrUnsetString("seriesName", doc.SeriesName)
+	if doc.PublicationYear <= 0 {
+		unsetDoc["publicationYear"] = ""
+	} else {
+		setDoc["publicationYear"] = doc.PublicationYear
+	}
+	setOrUnsetString("productWeight", doc.ProductWeight)
 	setOrUnsetString("publisherName", doc.PublisherName)
 	setOrUnsetString("sourceGuidNom", doc.SourceGUIDNOM)
 	setOrUnsetString("sourceGuid", doc.SourceGUID)
@@ -933,6 +948,48 @@ func (r *MainProductRepository) DeleteByID(ctx context.Context, id primitive.Obj
 		return nil, false, err
 	}
 	return &deleted, true, nil
+}
+
+func (r *MainProductRepository) ListByIDs(ctx context.Context, ids []primitive.ObjectID) ([]models.MainProduct, error) {
+	if len(ids) == 0 {
+		return []models.MainProduct{}, nil
+	}
+
+	cursor, err := r.collection.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var products []models.MainProduct
+	if err := cursor.All(ctx, &products); err != nil {
+		return nil, err
+	}
+
+	return products, nil
+}
+
+func (r *MainProductRepository) ListDuplicateScanRecords(ctx context.Context) ([]MainProductDuplicateScanRecord, error) {
+	opts := options.Find().SetProjection(bson.M{
+		"_id":            1,
+		"isbn":           1,
+		"isbnNormalized": 1,
+		"barcode":        1,
+		"code":           1,
+		"sourceNomcode":  1,
+	})
+	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var rows []MainProductDuplicateScanRecord
+	if err := cursor.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+
+	return rows, nil
 }
 
 func (r *MainProductRepository) DeleteByIDs(ctx context.Context, ids []primitive.ObjectID) ([]models.MainProduct, error) {
@@ -2046,6 +2103,10 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 	product.NicheName = strings.TrimSpace(product.NicheName)
 	product.BrandName = strings.TrimSpace(product.BrandName)
 	product.SeriesName = strings.TrimSpace(product.SeriesName)
+	if product.PublicationYear < 0 {
+		product.PublicationYear = 0
+	}
+	product.ProductWeight = strings.TrimSpace(product.ProductWeight)
 	product.PublisherName = strings.TrimSpace(product.PublisherName)
 	product.CategoryPath = sanitizeStringSlice(product.CategoryPath)
 	product.UpdatedAt = now

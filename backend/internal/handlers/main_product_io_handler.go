@@ -91,6 +91,8 @@ var mainProductColumns = []mainProductColumn{
 	{Key: "nicheName", Header: "niche_name"},
 	{Key: "brandName", Header: "brand_name"},
 	{Key: "seriesName", Header: "series_name"},
+	{Key: "publicationYear", Header: "publication_year"},
+	{Key: "productWeight", Header: "product_weight"},
 	{Key: "publisherName", Header: "publisher_name"},
 	{Key: "quantity", Header: "quantity"},
 	{Key: "price", Header: "price"},
@@ -135,6 +137,8 @@ type createMainProductRequest struct {
 	NicheName              string                         `json:"nicheName"`
 	BrandName              string                         `json:"brandName"`
 	SeriesName             string                         `json:"seriesName"`
+	PublicationYear        int                            `json:"publicationYear"`
+	ProductWeight          string                         `json:"productWeight"`
 	PublisherName          string                         `json:"publisherName"`
 	Quantity               float64                        `json:"quantity"`
 	Price                  float64                        `json:"price"`
@@ -607,6 +611,10 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 	if maxGameDurationMinutes < 0 {
 		maxGameDurationMinutes = 0
 	}
+	publicationYear := req.PublicationYear
+	if publicationYear < 0 {
+		publicationYear = 0
+	}
 	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Annotation))
 	annotation := strings.TrimSpace(firstNonEmpty(req.Annotation, req.Description))
 
@@ -643,6 +651,8 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 		NicheName:              strings.TrimSpace(req.NicheName),
 		BrandName:              strings.TrimSpace(req.BrandName),
 		SeriesName:             strings.TrimSpace(req.SeriesName),
+		PublicationYear:        publicationYear,
+		ProductWeight:          strings.TrimSpace(req.ProductWeight),
 		PublisherName:          strings.TrimSpace(req.PublisherName),
 		Quantity:               req.Quantity,
 		Price:                  req.Price,
@@ -1140,6 +1150,8 @@ func parseMainProductRows(rows [][]string) ([]models.MainProduct, error) {
 		)
 		product.BrandName = readMainProductCell(row, headerIndex, "brandName")
 		product.SeriesName = readMainProductCell(row, headerIndex, "seriesName")
+		product.PublicationYear = parseMainProductInt(readMainProductCell(row, headerIndex, "publicationYear"))
+		product.ProductWeight = readMainProductCell(row, headerIndex, "productWeight")
 		product.PublisherName = readMainProductCell(row, headerIndex, "publisherName")
 		product.SourceGUIDNOM = readMainProductCell(row, headerIndex, "sourceGuidNom")
 		product.SourceGUID = readMainProductCell(row, headerIndex, "sourceGuid")
@@ -1291,6 +1303,14 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 			index["seriesName"] = i
 		case "серия":
 			index["seriesName"] = i
+		case "publicationyear", "yearofpublication":
+			index["publicationYear"] = i
+		case "годиздания":
+			index["publicationYear"] = i
+		case "productweight", "weight":
+			index["productWeight"] = i
+		case "вестовара", "вес":
+			index["productWeight"] = i
 		case "publishername", "publisher":
 			index["publisherName"] = i
 		case "издатель", "издательство":
@@ -1586,6 +1606,14 @@ func mainProductCSVRow(product models.MainProduct) []string {
 			row = append(row, product.BrandName)
 		case "seriesName":
 			row = append(row, product.SeriesName)
+		case "publicationYear":
+			if product.PublicationYear > 0 {
+				row = append(row, strconv.Itoa(product.PublicationYear))
+			} else {
+				row = append(row, "")
+			}
+		case "productWeight":
+			row = append(row, product.ProductWeight)
 		case "publisherName":
 			row = append(row, product.PublisherName)
 		case "quantity":

@@ -169,6 +169,8 @@ const EMPTY_MAIN_PRODUCT_FORM = {
   nicheName: '',
   brandName: '',
   seriesName: '',
+  publicationYear: '',
+  productWeight: '',
   publisherName: '',
   categoryPath: '',
   quantity: '',
@@ -1532,7 +1534,7 @@ function App() {
         setDuplicatesError('')
         setDuplicatesStatus('Загрузка дубликатов с сервера...')
 
-        const response = await fetch(`${API_BASE_URL}/eksmoProducts/duplicates`, { signal: controller.signal })
+        const response = await fetch(`${API_BASE_URL}/mainProducts/duplicates`, { signal: controller.signal })
         if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
         const payload = await response.json()
         if (controller.signal.aborted) return
@@ -1985,7 +1987,7 @@ function App() {
       let totalInvalid = 0
 
       for (const batch of batches) {
-        const response = await fetch(`${API_BASE_URL}/eksmoProducts`, {
+        const response = await fetch(`${API_BASE_URL}/mainProducts`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ productIds: batch })
@@ -2000,7 +2002,7 @@ function App() {
       const removedSet = new Set(validIDs)
       setDuplicateProducts((prev) => prev.filter((item) => !removedSet.has(getEksmoMongoId(item))))
       setSelectedDuplicateIds((prev) => prev.filter((id) => !removedSet.has(id)))
-      setSyncVersion((prev) => prev + 1)
+      setMainProductsVersion((prev) => prev + 1)
 
       if (totalNotFound > 0 || totalInvalid > 0) {
         setDuplicatesStatus(`${successStatusPrefix}: ${totalDeleted}. Не найдено: ${totalNotFound}, некорректно: ${totalInvalid}.`)
@@ -2071,14 +2073,14 @@ function App() {
       setDuplicateDeleteId(productID)
       setDuplicatesError('')
       setDuplicatesStatus('Удаление товара из каталога All...')
-      const response = await fetch(`${API_BASE_URL}/eksmoProducts/${productID}`, { method: 'DELETE' })
+      const response = await fetch(`${API_BASE_URL}/mainProducts/${productID}`, { method: 'DELETE' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || `Ошибка (статус ${response.status})`)
 
       setDuplicateProducts((prev) => prev.filter((item) => getEksmoMongoId(item) !== productID))
       setSelectedDuplicateIds((prev) => prev.filter((id) => id !== productID))
       setDuplicatesStatus('Товар удален из каталога All.')
-      setSyncVersion((prev) => prev + 1)
+      setMainProductsVersion((prev) => prev + 1)
     } catch (err) {
       setDuplicatesError(err.message || 'Не удалось удалить товар All')
     } finally {
@@ -2434,6 +2436,8 @@ function App() {
       nicheName: String(product?.nicheName || ''),
       brandName: String(product?.brandName || ''),
       seriesName: String(product?.seriesName || ''),
+      publicationYear: formatOptionalNumberForInput(product?.publicationYear),
+      productWeight: String(product?.productWeight || ''),
       publisherName: String(product?.publisherName || ''),
       categoryPath: Array.isArray(product?.categoryPath) ? product.categoryPath.join(' / ') : '',
       quantity: formatOptionalNumberForInput(product?.quantity),
@@ -2696,6 +2700,8 @@ function App() {
       nicheName: String(form.nicheName || '').trim(),
       brandName: String(form.brandName || '').trim(),
       seriesName: String(form.seriesName || '').trim(),
+      publicationYear: parseOptionalInteger(form.publicationYear),
+      productWeight: String(form.productWeight || '').trim(),
       publisherName: String(form.publisherName || '').trim(),
       categoryPath: splitPathValue(form.categoryPath),
       quantity: parseOptionalNumber(form.quantity),
@@ -4670,6 +4676,8 @@ const PRODUCT_FIELD_META = {
   brandName: { label: 'Бренд' },
   series: { label: 'Серия' },
   seriesName: { label: 'Серия' },
+  publicationYear: { label: 'Год издания' },
+  productWeight: { label: 'Вес товара' },
   publisher: { label: 'Издатель' },
   publisherName: { label: 'Издатель' },
   authorRefs: { label: 'Авторы', hidden: true },
@@ -4795,6 +4803,8 @@ function buildProductDetailRows(product) {
     'brand',
     'seriesName',
     'series',
+    'publicationYear',
+    'productWeight',
     'publisherName',
     'publisher',
     'authorRefs',
@@ -4945,6 +4955,8 @@ function ProductDetailsModal({ product, onClose }) {
             <div className="details-summary">
               <p><strong>Автор:</strong> {authors}</p>
               <p><strong>Серия:</strong> {summarySeries}</p>
+              <p><strong>Год издания:</strong> {product?.publicationYear || '-'}</p>
+              <p><strong>Вес товара:</strong> {product?.productWeight || '-'}</p>
               <p><strong>Тема:</strong> {product?.subjectName || '-'}</p>
               <p><strong>Издатель:</strong> {product?.publisherName || '-'}</p>
               <p><strong>Жанр:</strong> {summaryGenres}</p>
@@ -5341,13 +5353,23 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             </label>
 
             <label className="main-product-field">
-              <span>Издатель</span>
-              <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
+              <span>Серия</span>
+              <input type="text" value={form.seriesName} onChange={(e) => onChange('seriesName', e.target.value)} />
             </label>
 
             <label className="main-product-field">
-              <span>Серия</span>
-              <input type="text" value={form.seriesName} onChange={(e) => onChange('seriesName', e.target.value)} />
+              <span>Год издания</span>
+              <input type="number" min="0" step="1" value={form.publicationYear} onChange={(e) => onChange('publicationYear', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Вес товара</span>
+              <input type="text" value={form.productWeight} onChange={(e) => onChange('productWeight', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Издатель</span>
+              <input type="text" value={form.publisherName} onChange={(e) => onChange('publisherName', e.target.value)} />
             </label>
 
             <label className="main-product-field full">

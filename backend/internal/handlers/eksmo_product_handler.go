@@ -115,6 +115,7 @@ func (h *EksmoProductHandler) RegisterRoutes(app *fiber.App) {
 	app.Post("/mainProducts", h.CreateMainProduct)
 	app.Put("/mainProducts/:id", h.UpdateMainProduct)
 	app.Get("/mainProducts", h.GetMainProducts)
+	app.Get("/mainProducts/duplicates", h.GetMainProductsDuplicates)
 	app.Get("/mainProducts/source-categories", h.GetMainProductsSourceCategories)
 	app.Post("/mainProducts/link-category", h.LinkMainProductsCategory)
 	app.Post("/mainProducts/unlink-category", h.UnlinkMainProductsCategory)
@@ -762,6 +763,95 @@ func (h *EksmoProductHandler) GetMainProducts(c *fiber.Ctx) error {
 		return c.JSON(payload)
 	}
 	return h.respondJSONWithCache(c, cacheNamespaceMainProducts, payload)
+}
+
+func (h *EksmoProductHandler) GetMainProductsDuplicates(c *fiber.Ctx) error {
+	if h.mainProductRepo == nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
+	}
+	if served, err := h.tryServeCachedJSON(c, cacheNamespaceMainProductsDuplicates); served || err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	rows, err := h.mainProductRepo.ListDuplicateScanRecords(ctx)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	valueToProductIDs := make(map[string]map[string]struct{}, len(rows))
+	idByHex := make(map[string]primitive.ObjectID, len(rows))
+	scanned := 0
+
+	for _, row := range rows {
+		if row.ID.IsZero() {
+			continue
+		}
+		productID := row.ID.Hex()
+		idByHex[productID] = row.ID
+		scanned++
+
+		normalizedValues := map[string]struct{}{}
+		for _, raw := range []string{
+			row.ISBNNormalized,
+			row.ISBN,
+			row.Barcode,
+			row.Code,
+			row.SourceNomCode,
+		} {
+			normalized := normalizeDuplicateCode(raw)
+			if normalized != "" {
+				normalizedValues[normalized] = struct{}{}
+			}
+		}
+
+		for normalized := range normalizedValues {
+			if _, exists := valueToProductIDs[normalized]; !exists {
+				valueToProductIDs[normalized] = map[string]struct{}{}
+			}
+			valueToProductIDs[normalized][productID] = struct{}{}
+		}
+	}
+
+	duplicateProductIDSet := map[string]struct{}{}
+	duplicateGroups := 0
+	for _, productSet := range valueToProductIDs {
+		if len(productSet) <= 1 {
+			continue
+		}
+		duplicateGroups++
+		for productID := range productSet {
+			duplicateProductIDSet[productID] = struct{}{}
+		}
+	}
+
+	duplicateIDs := make([]primitive.ObjectID, 0, len(duplicateProductIDSet))
+	for productID := range duplicateProductIDSet {
+		if oid, exists := idByHex[productID]; exists && !oid.IsZero() {
+			duplicateIDs = append(duplicateIDs, oid)
+		}
+	}
+	sort.Slice(duplicateIDs, func(i, j int) bool {
+		return duplicateIDs[i].Hex() < duplicateIDs[j].Hex()
+	})
+
+	products, err := h.mainProductRepo.ListByIDs(ctx, duplicateIDs)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	payload := fiber.Map{
+		"collection": "main_products_duplicates",
+		"data":       products,
+		"summary": fiber.Map{
+			"scanned":           scanned,
+			"duplicateGroups":   duplicateGroups,
+			"duplicateProducts": len(products),
+		},
+	}
+	return h.respondJSONWithCache(c, cacheNamespaceMainProductsDuplicates, payload)
 }
 
 func (h *EksmoProductHandler) SyncMainProductsFromBillz(c *fiber.Ctx) error {

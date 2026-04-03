@@ -19,6 +19,7 @@ const (
 	cacheNamespaceEksmoProductsDuplicates = "eksmoProductsDuplicates"
 	cacheNamespaceEksmoProductsMeta       = "eksmoProductsMeta"
 	cacheNamespaceMainProducts            = "mainProducts"
+	cacheNamespaceMainProductsDuplicates  = "mainProductsDuplicates"
 	cacheKeyPrefix                        = "topar:api-cache:"
 
 	redisCacheLookupTimeout = 200 * time.Millisecond
@@ -93,6 +94,7 @@ func invalidateProductCachesByRedis(redisClient *redis.Client) {
 		cacheNamespaceEksmoProductsDuplicates,
 		cacheNamespaceEksmoProductsMeta,
 		cacheNamespaceMainProducts,
+		cacheNamespaceMainProductsDuplicates,
 	} {
 		deleteRedisPatternByRedis(redisClient, cacheKeyPrefix+namespace+":*")
 	}

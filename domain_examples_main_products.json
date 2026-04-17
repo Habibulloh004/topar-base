@@ -1,0 +1,445 @@
+{
+  "generatedAt": {
+    "$date": "2026-03-18T18:07:00.597Z"
+  },
+  "database": "topar_db",
+  "collection": "main_products",
+  "totalDomainsRequested": 16,
+  "examples": [
+    {
+      "domain": "qamar.uz",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001ba4"
+        },
+        "sourceGuidNom": "client:qamar.uz:url-ba95b1c85faae820",
+        "annotation": "Farg'onada tong otguncha (2-kitob)",
+        "brandName": "Qamar",
+        "coverUrl": "https://qamar.uz/cdn/shop/files/2022-10-28_16.29.20_{width}x.webp?v=1667544790",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        },
+        "name": "Farg'onada tong otguncha (2-kitob)",
+        "price": 30000,
+        "sourceGuid": "client_url:ba95b1c85faae820",
+        "sourceNomcode": "url-ba95b1c85faae820",
+        "sourceProductId": {
+          "$oid": "69a0438d5238930a5b4ce213"
+        },
+        "subjectName": "Kitoblar",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        }
+      }
+    },
+    {
+      "domain": "azbooka.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b4565a35f26657abd92563"
+        },
+        "sourceGuidNom": "https://azbooka.ru/books/epokha-revolutsiy-i-pokoleniya-kotorye-ikh-vershili-1760-1820",
+        "annotation": "«Эпоха революций и поколения, которые их вершили: 1760–1820», Натан Перл-Розенталь, ISBN: 978-5-389-25957-7: аннотация, иллюстрации, самая полная информация о книге. Найдите свою книгу на официальном сайте издательств «Азбука», «Иностранка», «Махаон», «КоЛибри».",
+        "coverUrl": "https://api.azbooka.ru/upload/iblock/8ef/un42sjq9xphvi68u8c07u494xaxoz7pv.jpg",
+        "covers": {
+          "manual_1": "https://api.azbooka.ru/upload/iblock/8ef/un42sjq9xphvi68u8c07u494xaxoz7pv.jpg"
+        },
+        "createdAt": {
+          "$date": "2026-03-13T18:24:26.949Z"
+        },
+        "isbn": "978-5-389-25957-7",
+        "isbnNormalized": "9785389259577",
+        "name": "Эпоха революций и поколения, которые их вершили: 1760–1820",
+        "updatedAt": {
+          "$date": "2026-03-18T07:18:00.825Z"
+        },
+        "authorCover": "Натан Перл-Розенталь",
+        "sourceGuid": "https://azbooka.ru/books/epokha-revolutsiy-i-pokoleniya-kotorye-ikh-vershili-1760-1820",
+        "sourceNomcode": "978-5-389-25957-7"
+      }
+    },
+    {
+      "domain": "assets.asaxiy.uz",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9483690176a4cf800a93c"
+        },
+        "sourceGuidNom": "client:asaxiy.uz:T74018",
+        "annotation": "Купить Гэнки Кавамура: Если все кошки в мире исчезнут (мягкий) по выгодной цене в ASAXIY⭐️Акции⚡️Гарантия✅Описание⌚Рассрочка⌛️Быстрая доставка по Ташкенту и Узбекистану 👉 asaxiy.uz",
+        "brandName": "Asaxiy",
+        "coverUrl": "https://assets.asaxiy.uz/product/main_image/desktop/67920f028a90a.jpg.webp",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:26.461Z"
+        },
+        "name": "Гэнки Кавамура: Если все кошки в мире исчезнут (мягкий)",
+        "price": 80300,
+        "sourceGuid": "client_url:bef9a84af572efe2",
+        "sourceNomcode": "T74018",
+        "sourceProductId": {
+          "$oid": "69a0438d5238930a5b4ce219"
+        },
+        "subjectName": "Мировая литература",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:26.461Z"
+        }
+      }
+    },
+    {
+      "domain": "kanstik.uz",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001ba7"
+        },
+        "sourceGuidNom": "client:kanstik.uz:4280857002990",
+        "annotation": "Пастель 4280857002990",
+        "brandName": "Adel",
+        "coverUrl": "https://kanstik.uz/media/managers/store/products/product-c665c03fc0444d078726c57676a3ccec.png",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        },
+        "isbn": "4280857002990",
+        "isbnNormalized": "4280857002990",
+        "name": "Пастель 4280857002990",
+        "price": 38700,
+        "sourceGuid": "client_url:3cf0213238337c08",
+        "sourceNomcode": "4280857002990",
+        "sourceProductId": {
+          "$oid": "69a0438d5238930a5b4ce216"
+        },
+        "subjectName": "Восковые карандаши и мелки",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        }
+      }
+    },
+    {
+      "domain": "kansler.uz",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482590176a4cf80017a5"
+        },
+        "sourceGuidNom": "client:kansler.uz:9102",
+        "annotation": "Губка для смач.пальца",
+        "brandName": "no brand",
+        "coverUrl": "https://kansler.uz/media/managers/store/products/product-42c6b50a6c9f4982ac0992e0a8ca45b5.png",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:09.543Z"
+        },
+        "name": "Good2",
+        "sourceGuid": "client_url:d935aebe1b433d3e",
+        "sourceNomcode": "9102",
+        "sourceProductId": {
+          "$oid": "69a0438d5238930a5b4d2d6b"
+        },
+        "subjectName": "Губки, резинки для денег",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:09.543Z"
+        }
+      }
+    },
+    {
+      "domain": "hilolnashr.uz",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482890176a4cf8001dab"
+        },
+        "sourceGuidNom": "client:hilolnashr.uz:url-9e668f0997bffb53",
+        "annotation": "Ўқув қўлланмалар",
+        "brandName": "«Hilol Nashr»",
+        "coverUrl": "https://hilolnashr.uz/image/cache/catalog/category/oquv-qollanma-300-300-600x315w.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:12.032Z"
+        },
+        "name": "Ўқув қўлланмалар",
+        "price": 160000,
+        "sourceGuid": "client_url:9e668f0997bffb53",
+        "sourceNomcode": "url-9e668f0997bffb53",
+        "sourceProductId": {
+          "$oid": "69a0438d5238930a5b4ce661"
+        },
+        "subjectName": "Бош саҳифа",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:12.032Z"
+        }
+      }
+    },
+    {
+      "domain": "azbookvarik.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b6a"
+        },
+        "sourceGuidNom": "client:azbookvarik.ru:4680019286198",
+        "annotation": "Всего в планшетике 25 песенок, сказок, стихов, а также множество веселых звуков и голосов зверят. Все картинки звучат!",
+        "brandName": "Азбукварик",
+        "coverUrl": "https://azbookvarik.ru/upload/iblock/7fa/7fa0754097d17d886917b7bf080946a5.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        },
+        "isbn": "4680019286198",
+        "isbnNormalized": "4680019286198",
+        "name": "Планшетик Любимая сказочка",
+        "sourceGuid": "client_url:bbc1e6cb8ff8bcfd",
+        "sourceNomcode": "4680019286198",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc59d"
+        },
+        "subjectName": "Говорящие планшетики и доски",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        }
+      }
+    },
+    {
+      "domain": "hobbygames.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b7e"
+        },
+        "sourceGuidNom": "client:hobbygames.ru:UT-00017262",
+        "annotation": "Будьте мудрым даймё!",
+        "brandName": "2018",
+        "coverUrl": "https://hobbygames.ru/data/HobbyWorld/Bitva_za_Rokugan/bitva-za-rokugan_3D_roznica.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        },
+        "name": "Битва за Рокуган",
+        "price": 3490,
+        "sourceGuid": "client_url:18f1ee20562f2462",
+        "sourceNomcode": "UT-00017262",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5c3"
+        },
+        "subjectName": "Настольные игры",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        }
+      }
+    },
+    {
+      "domain": "10kor.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf80017ac"
+        },
+        "sourceGuidNom": "client:www.10kor.ru:4606088035543",
+        "annotation": "В разделе Игры в табакерке вы найдете большой ассортимент настольных развивающих игр в жестяных коробках от Десятого королевства для детей от 3 и выше лет",
+        "brandName": "Десятое королевство",
+        "coverUrl": "https://www.10kor.ru/upload/resize_cache/iblock/fa6/500_500_1/igra_nastolnaya_poschitay_ovechek_zhestyanaya_korobochka.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.410Z"
+        },
+        "isbn": "4606088035543",
+        "isbnNormalized": "4606088035543",
+        "name": "Игра настольная «Посчитай овечек» (жестяная коробочка)",
+        "sourceGuid": "client_url:cc1f91a155d30d89",
+        "sourceNomcode": "4606088035543",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5e8"
+        },
+        "subjectName": "Игры в табакерке",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.410Z"
+        }
+      }
+    },
+    {
+      "domain": "hobbyworld.cdnvideo.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b77"
+        },
+        "sourceGuidNom": "client:hobbyworld.ru:url-3e17ea55db29587d",
+        "annotation": "Pathfinder. Настольная ролевая игра. Бестиарий в издательстве Hobby World. Производство игр и продажа оптом с доставкой по всей России.",
+        "brandName": "Hobby World",
+        "coverUrl": "https://hobbyworld.cdnvideo.ru/image/cache/hobbyworld/data/HobbyWorld/Pathfinder_RPG/PF_Bestiary_3D_right00-320x320.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        },
+        "name": "Pathfinder. Настольная ролевая игра. Бестиарий",
+        "price": 2190,
+        "sourceGuid": "client_url:3e17ea55db29587d",
+        "sourceNomcode": "url-3e17ea55db29587d",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5ba"
+        },
+        "subjectName": "Настольные игры",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        }
+      }
+    },
+    {
+      "domain": "gaga.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b69"
+        },
+        "sourceGuidNom": "client:gaga.ru:url-c7ee8a7cc31b6b7b",
+        "annotation": "Большая Бродилка - это приятный и интересный способ отдохнуть! Огромный выбор лучших настольных игр и масса полезной информации – у нас на сайте.",
+        "brandName": "GaGa Games",
+        "coverUrl": "https://gaga.ru/gaga/files/images/fullsize/3037/1.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        },
+        "name": "Настольная игра Большая Бродилка",
+        "price": 2930,
+        "sourceGuid": "client_url:c7ee8a7cc31b6b7b",
+        "sourceNomcode": "url-c7ee8a7cc31b6b7b",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5b9"
+        },
+        "subjectName": "Новинки настольных игр в GaGa.ru",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        }
+      }
+    },
+    {
+      "domain": "cosmodrome.games",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482590176a4cf80017a6"
+        },
+        "sourceGuidNom": "client:cosmodrome.games:123",
+        "annotation": "Имаджинариум",
+        "brandName": "Cosmodrome Games",
+        "coverUrl": "https://cosmodrome.games/upload/iblock/e90/e90ba138d5991be292b6f99b4e1ea50e.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:09.543Z"
+        },
+        "name": "Good",
+        "sourceGuid": "client_url:950376499d872250",
+        "sourceNomcode": "123",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc770"
+        },
+        "subjectName": "Каталог настольных игр",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:09.543Z"
+        }
+      }
+    },
+    {
+      "domain": "storage.yandexcloud.net",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b9f"
+        },
+        "sourceGuidNom": "client:www.gaga-games.com:GG806",
+        "annotation": "Топливная Олли, геккон Эрнест, пёсик Фрэнк, авантюристка Трикс и неторопливая Бабуля теперь в 3D! Перед вами набор двусторонних резиновых фигурок персонажей для Большой Бродилки . Им не страшны грязные руки и пролитый чай. Бродите с удовольствием!",
+        "brandName": "GaGa Games",
+        "coverUrl": "https://storage.yandexcloud.net/cdn3.gaga-games.com/uploads/2025/12/oblozhka-1.png",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        },
+        "name": "Большая Бродилка: Набор Персонажей",
+        "price": 970,
+        "sourceGuid": "client_url:ec726236f2959ce2",
+        "sourceNomcode": "GG806",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5f8"
+        },
+        "subjectName": "Настольные игры",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        }
+      }
+    },
+    {
+      "domain": "igr.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b8a"
+        },
+        "sourceGuidNom": "client:igr.ru:9785506113409",
+        "annotation": "Раскраска «Сказочные подружки» из серии «100 картинок» ТМ «УМка» станет прекрасным подарком для маленьких художников: - картинки с чётким контуром - короткие комментарии к каждому рисунку - милые персонажи - удобный формат на спирали Большая раскраска с очаровательными сказочными героями — это отличный способ увлекательно провести время и с пользой занять ребёнка! Чёткий контур картинок делает раскраску удобной даже для юных художников: ребёнок без труда сможет аккуратно заполнить пространство внутри контура, не выходя за его пределы. Короткие комментарии к каждому рисунку помогут малышу лучше узнать персонажей и их истории, а также стимулируют его интерес к раскрашиванию. Удобный формат на спирали гарантирует, что раскраска прослужит долго и не испортится от частого использования. Ребёнок сможет легко перелистывать страницы, выбирая картинку для раскрашивания, и не будет беспокоиться о том, что листы выпадут или порвутся. Такая раскраска станет замечательным подарком и верным спутником в долгих поездках или спокойном домашнем досуге. Она поможет занять ребёнка полезным и интересным делом, а также поспособствует его всестороннему развитию. Игровые занятия с раскраской ТМ «УМка» также развивают: - сенсорное развитие - творческое мышление - внимание - речь Объём: 100 стр. Формат: 195 х 295 мм. Материал: бумага офсетная. Рекомендовано детям старшего дошкольного возраста.",
+        "brandName": "umka",
+        "coverUrl": "https://igr.ru/upload/images/409030/1000x1000/409030.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        },
+        "isbn": "9785506113409",
+        "isbnNormalized": "9785506113409",
+        "name": "Сказочные подружки. Раскраска. 100 картинок. 195х295 мм. Спираль.100 стр. Умка в кор.25шт",
+        "price": 294.5,
+        "sourceGuid": "client_url:c407ab0f8d6656cc",
+        "sourceNomcode": "9785506113409",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5d3"
+        },
+        "subjectName": "Раскраски на спирали, А4, 100 стр",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.752Z"
+        }
+      }
+    },
+    {
+      "domain": "ndplay.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9483a90176a4cf800c967"
+        },
+        "sourceGuidNom": "client:ndplay.ru:2m1cumtmUK",
+        "annotation": "Не подвергать длительному воздействию прямых солнечных лучей, не использовать в СВЧ, духовом шкафу, на открытом огне, не замораживать в морозильной камере, мыть перед использованием, ручная мойка без использования абразивных веществ.",
+        "brandName": "ND Play",
+        "coverUrl": "https://ndplay.ru/uploads/images/products/310487/0_310487.jpg",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:30.920Z"
+        },
+        "name": "Стакан низкий волны, 250 мл, стекло",
+        "price": 35,
+        "sourceGuid": "client_url:0aad32daa4f3afe6",
+        "sourceNomcode": "2m1cumtmUK",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc6ca"
+        },
+        "subjectName": "ЧСЗ",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:30.920Z"
+        }
+      }
+    },
+    {
+      "domain": "steppuzzle.ru",
+      "found": true,
+      "product": {
+        "_id": {
+          "$oid": "69b9482790176a4cf8001b82"
+        },
+        "sourceGuidNom": "client:www.steppuzzle.ru:80307",
+        "annotation": "Описание Игра «Транспорт» — это и пазл, и лото одновременно. Она позволяет моделировать разные ситуации — в инструкции вы увидите правила к шести играм, но также можете придумать свои. Игра познакомит ребенка с самыми разными видами транспорта — поездами, строительной техникой, водным и воздушным транспортом, городскими машинами и машинами спецслужб. Что полезного в игре? развивает мышление и внимание; развивает мелкую моторику; знакомит с новыми словами. Состав игры: пазловые карточки — 6 шт. деревянные фишки — 36 шт. мешочек — 1 шт.; правила игры — 1 шт. Игра подходит для детей от 3 лет . Рекомендуемое количество участников: 2 человека (с учетом взрослого) . Порадуйте ребенка игрой «Транспорт» — она полезная и весёлая, позволит деткам узнать много нового.",
+        "brandName": "Step Puzzle",
+        "coverUrl": "https://www.steppuzzle.ru/local/templates/main/i/qr.png",
+        "createdAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        },
+        "name": "Развивающая игра Лото. Транспорт (IQ step)",
+        "sourceGuid": "client_url:408bc7cad5cf5ecd",
+        "sourceNomcode": "80307",
+        "sourceProductId": {
+          "$oid": "699b53072ffd8c6e0babc5c8"
+        },
+        "subjectName": "Лото",
+        "updatedAt": {
+          "$date": "2026-03-17T12:25:11.710Z"
+        }
+      }
+    }
+  ]
+}

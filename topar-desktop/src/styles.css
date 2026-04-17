@@ -350,6 +350,12 @@ h2 {
   margin-top: 1rem;
 }
 
+.review-actions {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 0.75rem;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

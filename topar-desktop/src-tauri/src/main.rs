@@ -55,6 +55,7 @@ fn main() {
             commands::database::get_all_runs,
             commands::database::get_run_with_records,
             commands::database::delete_run,
+            commands::database::export_run_records_json,
             commands::database::get_all_mapping_profiles,
             commands::database::get_mapping_profile,
             commands::database::save_mapping_profile,

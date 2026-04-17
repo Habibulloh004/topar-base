@@ -61,7 +61,13 @@
     "showing": "Showing {{count}} products",
     "noProducts": "No products to review. Please parse products first.",
     "sourceUrl": "Source URL",
-    "data": "Data"
+    "data": "Data",
+    "export": {
+      "button": "Export JSON",
+      "exporting": "Exporting...",
+      "success": "Parsed products exported to: {{path}}",
+      "failed": "Failed to export parsed products"
+    }
   },
   "sync": {
     "title": "Sync to Database",

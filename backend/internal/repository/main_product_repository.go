@@ -1206,6 +1206,83 @@ func (r *MainProductRepository) AssignCategoryByFilter(
 	return result.MatchedCount, result.ModifiedCount, nil
 }
 
+func (r *MainProductRepository) RefreshCategoryPathsByCategoryID(
+	ctx context.Context,
+	pathsByCategoryID map[primitive.ObjectID][]string,
+) (matched int64, modified int64, err error) {
+	if len(pathsByCategoryID) == 0 {
+		return 0, 0, nil
+	}
+
+	now := time.Now().UTC()
+	operations := make([]mongo.WriteModel, 0, len(pathsByCategoryID))
+	for categoryID, path := range pathsByCategoryID {
+		if categoryID.IsZero() {
+			continue
+		}
+		update := bson.M{
+			"$set": bson.M{
+				"categoryPath": sanitizeStringSlice(path),
+				"updatedAt":    now,
+			},
+		}
+		operations = append(operations, mongo.NewUpdateManyModel().
+			SetFilter(bson.M{"categoryId": categoryID}).
+			SetUpdate(update))
+	}
+
+	if len(operations) == 0 {
+		return 0, 0, nil
+	}
+
+	result, err := r.collection.BulkWrite(ctx, operations, options.BulkWrite().SetOrdered(false))
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
+func (r *MainProductRepository) RemoveCategoryByCategoryIDs(
+	ctx context.Context,
+	categoryIDs []primitive.ObjectID,
+) (matched int64, modified int64, err error) {
+	if len(categoryIDs) == 0 {
+		return 0, 0, nil
+	}
+
+	unique := make(map[primitive.ObjectID]struct{}, len(categoryIDs))
+	ids := make([]primitive.ObjectID, 0, len(categoryIDs))
+	for _, id := range categoryIDs {
+		if id.IsZero() {
+			continue
+		}
+		if _, exists := unique[id]; exists {
+			continue
+		}
+		unique[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return 0, 0, nil
+	}
+
+	update := bson.M{
+		"$unset": bson.M{
+			"categoryId":   "",
+			"categoryPath": "",
+		},
+		"$set": bson.M{
+			"updatedAt": time.Now().UTC(),
+		},
+	}
+
+	result, err := r.collection.UpdateMany(ctx, bson.M{"categoryId": bson.M{"$in": ids}}, update)
+	if err != nil {
+		return 0, 0, err
+	}
+	return result.MatchedCount, result.ModifiedCount, nil
+}
+
 func (r *MainProductRepository) ExistsBySource(ctx context.Context, guidNom, guid, nomcode string) (bool, error) {
 	filter := bson.M{}
 	switch {

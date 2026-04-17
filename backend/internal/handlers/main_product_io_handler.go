@@ -541,9 +541,10 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 	categoryPath := cleanStringSlice(req.CategoryPath)
 	if !categoryID.IsZero() && len(categoryPath) == 0 && h.categoryLinker != nil {
 		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = h.categoryLinker.BuildCache(cacheCtx)
+		if err := h.categoryLinker.BuildCache(cacheCtx); err == nil {
+			categoryPath = h.categoryLinker.GetCategoryPath(categoryID)
+		}
 		cacheCancel()
-		categoryPath = h.categoryLinker.GetCategoryPath(categoryID)
 	}
 
 	coverURLs := cleanStringSlice(req.CoverURLs)

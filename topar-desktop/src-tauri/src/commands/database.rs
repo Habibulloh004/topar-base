@@ -1,5 +1,6 @@
 use crate::db::operations::*;
 use crate::AppState;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -12,6 +13,14 @@ pub struct RunWithRecords {
     pub run: Run,
     pub records: Vec<Record>,
     pub total_records: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExportedRunPayload {
+    pub run: Run,
+    pub total_records: usize,
+    pub exported_at: chrono::DateTime<Utc>,
+    pub products: Vec<Record>,
 }
 
 #[tauri::command]
@@ -69,6 +78,53 @@ pub async fn delete_run(
         .db
         .delete_run(&run_id)
         .map_err(|e| format!("Failed to delete run: {}", e))
+}
+
+#[tauri::command]
+pub async fn export_run_records_json(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Option<String>, String> {
+    let run = state
+        .db
+        .get_run(&run_id)
+        .map_err(|e| format!("Failed to get run: {}", e))?
+        .ok_or_else(|| "Run not found".to_string())?;
+
+    let records = state
+        .db
+        .get_all_records_by_run(&run_id)
+        .map_err(|e| format!("Failed to get records for export: {}", e))?;
+
+    let default_filename = format!("parsed_products_{}.json", run_id);
+
+    let Some(path) = tauri::api::dialog::blocking::FileDialogBuilder::new()
+        .set_title("Export parsed products")
+        .set_file_name(&default_filename)
+        .add_filter("JSON", &["json"])
+        .save_file()
+    else {
+        return Ok(None);
+    };
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to prepare export directory: {}", e))?;
+    }
+
+    let payload = ExportedRunPayload {
+        run,
+        total_records: records.len(),
+        exported_at: Utc::now(),
+        products: records,
+    };
+
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("Failed to serialize exported data: {}", e))?;
+
+    std::fs::write(&path, json).map_err(|e| format!("Failed to write export file: {}", e))?;
+
+    Ok(Some(path.display().to_string()))
 }
 
 // ============================================================================

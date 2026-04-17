@@ -65,6 +65,7 @@ interface ParserState {
   updateMappingRule: (target: string, rule: MappingRule) => void
   saveMappingProfile: (name: string) => Promise<void>
   loadMappingProfile: (profileId: string) => Promise<void>
+  exportCurrentRunToJson: () => Promise<string | null>
   reset: () => void
 }
 
@@ -232,6 +233,21 @@ export const useParserStore = create<ParserState>((set, get) => ({
       set({ mappingRules: profile.rules })
     } catch (error) {
       console.error('Failed to load mapping profile:', error)
+      throw error
+    }
+  },
+
+  exportCurrentRunToJson: async () => {
+    const runId = get().currentRun?.id
+    if (!runId) {
+      throw new Error('No parsed run available for export')
+    }
+
+    try {
+      const path: string | null = await invoke('export_run_records_json', { runId })
+      return path
+    } catch (error) {
+      console.error('Failed to export parsed records:', error)
       throw error
     }
   },

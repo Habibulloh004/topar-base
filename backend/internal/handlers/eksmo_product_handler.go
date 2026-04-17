@@ -403,9 +403,9 @@ func (h *EksmoProductHandler) CopyEksmoProductsToMain(c *fiber.Ctx) error {
 			}
 		}
 
-		categoryPath = h.categoryLinker.GetCategoryPath(categoryOID)
-		if len(categoryPath) == 0 {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "selected main category not found"})
+		categoryPath, err = h.resolveCategoryPath(ctx, categoryOID)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
 	}
 
@@ -1221,16 +1221,13 @@ func (h *EksmoProductHandler) LinkMainProductsCategory(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "categoryId must be a valid ObjectID"})
 	}
 
-	var categoryPath []string
-	if h.categoryLinker != nil {
-		cacheCtx, cacheCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = h.categoryLinker.BuildCache(cacheCtx)
-		cacheCancel()
-		categoryPath = h.categoryLinker.GetCategoryPath(categoryOID)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+
+	categoryPath, err := h.resolveCategoryPath(ctx, categoryOID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	if req.ApplyToFiltered {
 		params := repository.MainProductFilterParams{
@@ -2307,6 +2304,23 @@ func (h *EksmoProductHandler) expandCategoryFilters(categoryIDs []primitive.Obje
 	}
 
 	return result
+}
+
+func (h *EksmoProductHandler) resolveCategoryPath(ctx context.Context, categoryID primitive.ObjectID) ([]string, error) {
+	if categoryID.IsZero() {
+		return nil, errors.New("categoryId is required")
+	}
+	if h.categoryLinker == nil {
+		return nil, errors.New("category linker not configured")
+	}
+	if err := h.categoryLinker.BuildCache(ctx); err != nil {
+		return nil, errors.New("failed to load categories")
+	}
+	path := h.categoryLinker.GetCategoryPath(categoryID)
+	if len(path) == 0 {
+		return nil, errors.New("selected main category not found")
+	}
+	return append([]string{}, path...), nil
 }
 
 func cleanStringSlice(items []string) []string {

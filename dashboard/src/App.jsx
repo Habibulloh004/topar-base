@@ -335,6 +335,15 @@ function isMongoObjectId(value) {
   return /^[a-f\d]{24}$/i.test(String(value || '').trim())
 }
 
+function toMongoObjectIdString(value) {
+  if (isMongoObjectId(value)) return String(value).trim()
+  if (value && typeof value === 'object') {
+    const oid = String(value.$oid || value.oid || value.id || '').trim()
+    if (isMongoObjectId(oid)) return oid
+  }
+  return ''
+}
+
 function getEksmoProductKey(product) {
   return product.guidNom || product.guid || product.id
 }
@@ -540,6 +549,45 @@ function flattenMainCategoryOptions(nodes, path = []) {
   return result
 }
 
+function findMainCategoryNodeById(nodes, targetID) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return null
+  const normalizedTargetID = String(targetID || '').trim()
+  if (!normalizedTargetID) return null
+
+  const stack = [...nodes]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current || typeof current !== 'object') continue
+    if (String(current.id || '').trim() === normalizedTargetID) return current
+    if (Array.isArray(current.children) && current.children.length > 0) {
+      for (const child of current.children) stack.push(child)
+    }
+  }
+
+  return null
+}
+
+function getMainCategoryDescendantIdSet(nodes, rootID) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return new Set()
+  const root = findMainCategoryNodeById(nodes, rootID)
+  if (!root || !Array.isArray(root.children) || root.children.length === 0) return new Set()
+
+  const descendants = new Set()
+  const stack = [...root.children]
+  while (stack.length > 0) {
+    const current = stack.pop()
+    if (!current || typeof current !== 'object') continue
+    const currentID = String(current.id || '').trim()
+    if (!currentID || descendants.has(currentID)) continue
+    descendants.add(currentID)
+    if (Array.isArray(current.children) && current.children.length > 0) {
+      for (const child of current.children) stack.push(child)
+    }
+  }
+
+  return descendants
+}
+
 function flattenTreeNodeIds(nodes) {
   if (!Array.isArray(nodes) || nodes.length === 0) return []
   const result = []
@@ -564,6 +612,25 @@ function filterTreeNodesByQuery(nodes, normalizedQuery) {
     const children = Array.isArray(node?.children) ? node.children : []
     const filteredChildren = filterTreeNodesByQuery(children, normalizedQuery)
     if (nodeName.includes(normalizedQuery) || filteredChildren.length > 0) {
+      result.push({
+        ...node,
+        children: filteredChildren
+      })
+    }
+  }
+  return result
+}
+
+function filterTreeNodesByAllowedIds(nodes, allowedIDSet) {
+  if (!Array.isArray(nodes) || nodes.length === 0) return []
+  if (!(allowedIDSet instanceof Set)) return []
+
+  const result = []
+  for (const node of nodes) {
+    const nodeID = String(node?.id || '').trim()
+    const children = Array.isArray(node?.children) ? node.children : []
+    const filteredChildren = filterTreeNodesByAllowedIds(children, allowedIDSet)
+    if (allowedIDSet.has(nodeID) || filteredChildren.length > 0) {
       result.push({
         ...node,
         children: filteredChildren
@@ -895,6 +962,13 @@ function App() {
 
   const [mainCategories, setMainCategories] = useState([])
   const [mainCategoriesLoading, setMainCategoriesLoading] = useState(true)
+  const [mainCategoriesActionKey, setMainCategoriesActionKey] = useState('')
+  const [mainCategoryEditorMode, setMainCategoryEditorMode] = useState('')
+  const [mainCategoryEditorTarget, setMainCategoryEditorTarget] = useState('mainProducts')
+  const [mainCategoryEditorName, setMainCategoryEditorName] = useState('')
+  const [mainCategoryEditorParentId, setMainCategoryEditorParentId] = useState('0')
+  const [mainCategoryEditorNode, setMainCategoryEditorNode] = useState(null)
+  const [mainCategoryParentPickerExpanded, setMainCategoryParentPickerExpanded] = useState({})
   const [mainCategoriesExpanded, setMainCategoriesExpanded] = useState({})
   const [mainProductsExpanded, setMainProductsExpanded] = useState({})
 
@@ -1327,22 +1401,218 @@ function App() {
     setCategorySearchQuery('')
   }, [isCategoryDropdownOpen])
 
+  const loadMainCategories = useCallback(async () => {
+    try {
+      setMainCategoriesLoading(true)
+      const response = await fetch(`${API_BASE_URL}/categories`)
+      if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
+      const payload = await response.json()
+      const categories = Array.isArray(payload.data) ? payload.data : []
+      setMainCategories(categories)
+
+      const categoryIDSet = new Set(flattenTreeNodeIds(categories))
+      setSelectedMainCategory((prev) => (prev?.id && categoryIDSet.has(prev.id) ? prev : null))
+      setSelectedMainProductsCategories((prev) => prev.filter((item) => categoryIDSet.has(item.id)))
+    } catch (err) {
+      console.error('Failed to load main categories:', err)
+    } finally {
+      setMainCategoriesLoading(false)
+    }
+  }, [])
+
+  const setCategoryActionStatus = useCallback((target, message) => {
+    if (target === 'mainProducts') {
+      setMainProductsStatus(message)
+      return
+    }
+    setCopyStatus(message)
+  }, [])
+
+  const closeMainCategoryEditor = useCallback(() => {
+    setMainCategoryEditorMode('')
+    setMainCategoryEditorName('')
+    setMainCategoryEditorParentId('0')
+    setMainCategoryEditorNode(null)
+    setMainCategoryParentPickerExpanded({})
+  }, [])
+
+  const openCreateMainCategoryEditor = useCallback((target, parentID = '0') => {
+    setMainCategoryEditorMode('create')
+    setMainCategoryEditorTarget(target)
+    setMainCategoryEditorName('')
+    setMainCategoryEditorParentId(String(parentID || '').trim() || '0')
+    setMainCategoryEditorNode(null)
+    setMainCategoryParentPickerExpanded({})
+  }, [])
+
   useEffect(() => {
-    const loadMainCategories = async () => {
+    if (!mainCategoryEditorMode || typeof document === 'undefined') return
+
+    const editorBusy = mainCategoriesLoading || Boolean(mainCategoriesActionKey)
+    const previousOverflow = document.body.style.overflow
+    const handleEscape = (event) => {
+      if (event.key !== 'Escape') return
+      if (editorBusy) return
+      closeMainCategoryEditor()
+    }
+
+    document.body.style.overflow = 'hidden'
+    document.addEventListener('keydown', handleEscape)
+
+    return () => {
+      document.body.style.overflow = previousOverflow
+      document.removeEventListener('keydown', handleEscape)
+    }
+  }, [mainCategoryEditorMode, mainCategoriesLoading, mainCategoriesActionKey, closeMainCategoryEditor])
+
+  const handleRenameMainCategory = useCallback(
+    async (target, category) => {
+      const categoryID = String(category?.id || '').trim()
+      if (!categoryID) return
+      const currentName = String(category?.name || '').trim()
+      const nextNameInput = typeof window !== 'undefined' ? window.prompt('Новое название категории:', currentName) : currentName
+      const nextName = String(nextNameInput || '').trim()
+      if (!nextName || nextName === currentName) return
+
       try {
-        setMainCategoriesLoading(true)
-        const response = await fetch(`${API_BASE_URL}/categories`)
-        if (!response.ok) throw new Error(`Ошибка, статус ${response.status}`)
-        const payload = await response.json()
-        setMainCategories(Array.isArray(payload.data) ? payload.data : [])
+        setMainCategoriesActionKey('rename')
+        setCategoryActionStatus(target, 'Переименование категории...')
+        const response = await fetch(`${API_BASE_URL}/categories/${categoryID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: nextName })
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error || `Ошибка, статус ${response.status}`)
+        await loadMainCategories()
+        setCategoryActionStatus(target, 'Категория обновлена.')
       } catch (err) {
-        console.error('Failed to load main categories:', err)
+        setCategoryActionStatus(target, err.message || 'Не удалось обновить категорию')
       } finally {
-        setMainCategoriesLoading(false)
+        setMainCategoriesActionKey('')
+      }
+    },
+    [loadMainCategories, setCategoryActionStatus]
+  )
+
+  const openMoveMainCategoryParentEditor = useCallback(
+    (target, category) => {
+      const categoryID = String(category?.id || '').trim()
+      if (!categoryID) return
+      const currentNode = findMainCategoryNodeById(mainCategories, categoryID)
+      if (!currentNode) {
+        setCategoryActionStatus(target, 'Категория не найдена.')
+        return
+      }
+      setMainCategoryEditorMode('move')
+      setMainCategoryEditorTarget(target)
+      setMainCategoryEditorName('')
+      setMainCategoryEditorParentId(String(currentNode.parentId || '0').trim() || '0')
+      setMainCategoryEditorNode({
+        id: categoryID,
+        name: String(currentNode.name || '').trim()
+      })
+      setMainCategoryParentPickerExpanded({})
+    },
+    [mainCategories, setCategoryActionStatus]
+  )
+
+  const submitMainCategoryEditor = useCallback(async () => {
+    const target = mainCategoryEditorTarget === 'eksmo' ? 'eksmo' : 'mainProducts'
+    const mode = mainCategoryEditorMode
+    const parentID = String(mainCategoryEditorParentId || '').trim() || '0'
+
+    if (mode === 'create') {
+      const name = String(mainCategoryEditorName || '').trim()
+      if (!name) {
+        setCategoryActionStatus(target, 'Введите название категории.')
+        return
+      }
+      try {
+        setMainCategoriesActionKey('create')
+        setCategoryActionStatus(target, 'Создание категории...')
+        const response = await fetch(`${API_BASE_URL}/categories`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, parentId: parentID })
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error || `Ошибка, статус ${response.status}`)
+        await loadMainCategories()
+        closeMainCategoryEditor()
+        setCategoryActionStatus(target, `Категория «${name}» создана.`)
+      } catch (err) {
+        setCategoryActionStatus(target, err.message || 'Не удалось создать категорию')
+      } finally {
+        setMainCategoriesActionKey('')
+      }
+      return
+    }
+
+    if (mode === 'move') {
+      const categoryID = String(mainCategoryEditorNode?.id || '').trim()
+      if (!categoryID) return
+
+      try {
+        setMainCategoriesActionKey('move')
+        setCategoryActionStatus(target, 'Изменение родителя категории...')
+        const response = await fetch(`${API_BASE_URL}/categories/${categoryID}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parentId: parentID })
+        })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error || `Ошибка, статус ${response.status}`)
+        await loadMainCategories()
+        closeMainCategoryEditor()
+        setCategoryActionStatus(target, 'Родитель категории обновлен.')
+      } catch (err) {
+        setCategoryActionStatus(target, err.message || 'Не удалось изменить родителя категории')
+      } finally {
+        setMainCategoriesActionKey('')
       }
     }
+  }, [
+    closeMainCategoryEditor,
+    loadMainCategories,
+    mainCategoryEditorMode,
+    mainCategoryEditorName,
+    mainCategoryEditorNode?.id,
+    mainCategoryEditorParentId,
+    mainCategoryEditorTarget,
+    setCategoryActionStatus
+  ])
+
+  const handleDeleteMainCategory = useCallback(
+    async (target, category) => {
+      const categoryID = String(category?.id || '').trim()
+      const categoryName = String(category?.name || '').trim()
+      if (!categoryID) return
+
+      const confirmed =
+        typeof window !== 'undefined' ? window.confirm(`Удалить категорию «${categoryName || categoryID}» и все ее дочерние категории?`) : false
+      if (!confirmed) return
+
+      try {
+        setMainCategoriesActionKey('delete')
+        setCategoryActionStatus(target, 'Удаление категории...')
+        const response = await fetch(`${API_BASE_URL}/categories/${categoryID}`, { method: 'DELETE' })
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload?.error || `Ошибка, статус ${response.status}`)
+        await loadMainCategories()
+        setCategoryActionStatus(target, 'Категория удалена.')
+      } catch (err) {
+        setCategoryActionStatus(target, err.message || 'Не удалось удалить категорию')
+      } finally {
+        setMainCategoriesActionKey('')
+      }
+    },
+    [loadMainCategories, setCategoryActionStatus]
+  )
+
+  useEffect(() => {
     loadMainCategories()
-  }, [])
+  }, [loadMainCategories])
 
   useEffect(() => {
     if (activePage !== 'mainProducts') return
@@ -1609,6 +1879,7 @@ function App() {
   const toggleEksmoNode = (guid) => setEksmoExpanded((prev) => ({ ...prev, [guid]: !prev[guid] }))
   const toggleMainCategoryNode = (id) => setMainCategoriesExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
   const toggleMainProductsCategoryNode = (id) => setMainProductsExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
+  const toggleMainCategoryParentPickerNode = (id) => setMainCategoryParentPickerExpanded((prev) => ({ ...prev, [id]: !prev[id] }))
 
   const toggleMainCategorySelection = (node, path) => {
     setSelectedMainCategory((prev) => {
@@ -2386,7 +2657,18 @@ function App() {
       return
     }
 
-    const categoryId = isMongoObjectId(product?.categoryId) ? String(product.categoryId) : ''
+    let categoryId = toMongoObjectIdString(product?.categoryId)
+    if (!categoryId && Array.isArray(product?.categoryPath) && product.categoryPath.length > 0) {
+      const currentPathLabel = product.categoryPath
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(' / ')
+        .toLowerCase()
+      if (currentPathLabel) {
+        const matched = mainCategoryOptions.find((option) => String(option?.label || '').trim().toLowerCase() === currentPathLabel)
+        categoryId = String(matched?.id || '')
+      }
+    }
     const productCoverUrls = extractCoverUrlsFromProduct(product).map((item) => normalizeImageValue(item))
     const primaryCoverUrl = normalizeImageValue(product?.coverUrl || '') || productCoverUrls[0] || ''
     const authorRefs = Array.isArray(product?.authorRefs) ? product.authorRefs : []
@@ -2442,19 +2724,41 @@ function App() {
       categoryPath: Array.isArray(product?.categoryPath) ? product.categoryPath.join(' / ') : '',
       quantity: formatOptionalNumberForInput(product?.quantity),
       price: formatOptionalNumberForInput(product?.price),
-      categoryId,
+      categoryId: String(categoryId || ''),
       sourceGuidNom: String(product?.sourceGuidNom || ''),
       sourceGuid: String(product?.sourceGuid || ''),
       sourceNomcode: String(product?.sourceNomcode || '')
     }
 
     const draftEntry = readMainProductDraftEntry(productID)
-    const restoredForm = draftEntry
+    const draftMergedForm = draftEntry
       ? {
           ...baseForm,
           ...normalizeMainProductFormDraft(draftEntry.form || EMPTY_MAIN_PRODUCT_FORM)
         }
       : baseForm
+
+    const restoredCategoryId = (() => {
+      const fromDraft = toMongoObjectIdString(draftMergedForm?.categoryId)
+      if (fromDraft) return fromDraft
+      if (categoryId) return categoryId
+
+      const mergedPathLabel = String(draftMergedForm?.categoryPath || '')
+        .split(' / ')
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join(' / ')
+        .toLowerCase()
+      if (!mergedPathLabel) return ''
+
+      const matched = mainCategoryOptions.find((option) => String(option?.label || '').trim().toLowerCase() === mergedPathLabel)
+      return String(matched?.id || '')
+    })()
+
+    const restoredForm = {
+      ...draftMergedForm,
+      categoryId: restoredCategoryId
+    }
 
     setMainProductsStatus(draftEntry ? 'Восстановлен локальный черновик товара.' : '')
     setMainProductForm(restoredForm)
@@ -2955,6 +3259,28 @@ function App() {
       : selectedMainProductsCategories.length === 1
         ? selectedMainProductsCategories[0].path?.join(' / ') || selectedMainProductsCategories[0].name
         : `${selectedMainProductsCategories.length} категорий выбрано`
+  const selectedMainProductsCategory = selectedMainProductsCategories.length === 1 ? selectedMainProductsCategories[0] : null
+  const mainCategoryActionBusy = mainCategoriesLoading || Boolean(mainCategoriesActionKey)
+  const mainCategoryEditorParentOptions = useMemo(() => {
+    if (mainCategoryEditorMode !== 'move') {
+      return [{ id: '0', label: 'Корень' }, ...mainCategoryOptions.map((item) => ({ id: item.id, label: item.label }))]
+    }
+
+    const editingCategoryID = String(mainCategoryEditorNode?.id || '').trim()
+    const descendants = getMainCategoryDescendantIdSet(mainCategories, editingCategoryID)
+    const options = [{ id: '0', label: 'Корень' }]
+    for (const item of mainCategoryOptions) {
+      if (item.id === editingCategoryID) continue
+      if (descendants.has(item.id)) continue
+      options.push({ id: item.id, label: item.label })
+    }
+    return options
+  }, [mainCategoryEditorMode, mainCategoryEditorNode?.id, mainCategoryOptions, mainCategories])
+  const mainCategoryEditorParentIdSet = useMemo(() => new Set(mainCategoryEditorParentOptions.map((option) => option.id)), [mainCategoryEditorParentOptions])
+  const mainCategoryEditorParentTree = useMemo(
+    () => filterTreeNodesByAllowedIds(mainCategories, mainCategoryEditorParentIdSet),
+    [mainCategories, mainCategoryEditorParentIdSet]
+  )
 
   const categoryDropdownMenu =
     isCategoryDropdownOpen && typeof document !== 'undefined'
@@ -3009,6 +3335,43 @@ function App() {
                   Выбрано: {selectedMainCategoryPathText}
                 </p>
               )}
+              <div className="category-actions">
+                <button className="btn table-btn" type="button" disabled={mainCategoryActionBusy} onClick={() => openCreateMainCategoryEditor('eksmo', '0')}>
+                  + Корень
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainCategory?.id}
+                  onClick={() => openCreateMainCategoryEditor('eksmo', selectedMainCategory?.id || '0')}
+                >
+                  + Дочерняя
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainCategory?.id}
+                  onClick={() => handleRenameMainCategory('eksmo', selectedMainCategory)}
+                >
+                  Переименовать
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainCategory?.id}
+                  onClick={() => openMoveMainCategoryParentEditor('eksmo', selectedMainCategory)}
+                >
+                  Сменить родителя
+                </button>
+                <button
+                  className="btn table-btn danger"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainCategory?.id}
+                  onClick={() => handleDeleteMainCategory('eksmo', selectedMainCategory)}
+                >
+                  Удалить
+                </button>
+              </div>
               {mainCategoriesLoading ? (
                 <p className="sidebar-loading">Загрузка...</p>
               ) : mainCategories.length === 0 ? (
@@ -3238,6 +3601,43 @@ function App() {
               <p className="sidebar-selected" title={selectedMainProductsCategoryPathText}>
                 Категория: {selectedMainProductsCategoryPathText}
               </p>
+              <div className="category-actions">
+                <button className="btn table-btn" type="button" disabled={mainCategoryActionBusy} onClick={() => openCreateMainCategoryEditor('mainProducts', '0')}>
+                  + Корень
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainProductsCategory?.id}
+                  onClick={() => openCreateMainCategoryEditor('mainProducts', selectedMainProductsCategory?.id || '0')}
+                >
+                  + Дочерняя
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainProductsCategory?.id}
+                  onClick={() => handleRenameMainCategory('mainProducts', selectedMainProductsCategory)}
+                >
+                  Переименовать
+                </button>
+                <button
+                  className="btn table-btn"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainProductsCategory?.id}
+                  onClick={() => openMoveMainCategoryParentEditor('mainProducts', selectedMainProductsCategory)}
+                >
+                  Сменить родителя
+                </button>
+                <button
+                  className="btn table-btn danger"
+                  type="button"
+                  disabled={mainCategoryActionBusy || !selectedMainProductsCategory?.id}
+                  onClick={() => handleDeleteMainCategory('mainProducts', selectedMainProductsCategory)}
+                >
+                  Удалить
+                </button>
+              </div>
               {mainCategoriesLoading ? (
                 <p className="sidebar-loading">Загрузка...</p>
               ) : mainCategories.length === 0 ? (
@@ -3715,6 +4115,74 @@ function App() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {mainCategoryEditorMode !== '' && (
+        <div className="details-modal-overlay" onClick={() => (mainCategoryActionBusy ? null : closeMainCategoryEditor())} role="dialog" aria-modal="true" aria-label="Редактор категории">
+          <div className="details-modal category-parent-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="details-modal-header">
+              <h3>{mainCategoryEditorMode === 'create' ? 'Создать категорию' : 'Сменить родителя'}</h3>
+              <button
+                type="button"
+                className="close-btn"
+                onClick={() => {
+                  if (mainCategoryActionBusy) return
+                  closeMainCategoryEditor()
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div className="details-modal-body">
+              {mainCategoryEditorMode === 'move' ? (
+                <p className="category-editor-title">Категория: {mainCategoryEditorNode?.name || '-'}</p>
+              ) : (
+                <label className="category-editor-label">
+                  Название
+                  <input
+                    type="text"
+                    value={mainCategoryEditorName}
+                    placeholder="Введите название категории"
+                    onChange={(event) => setMainCategoryEditorName(event.target.value)}
+                  />
+                </label>
+              )}
+
+              <label className="category-editor-label">Новый родитель</label>
+              <div className="category-parent-picker">
+                <button
+                  type="button"
+                  className={`category-parent-picker-row ${mainCategoryEditorParentId === '0' ? 'selected' : ''}`}
+                  onClick={() => setMainCategoryEditorParentId('0')}
+                >
+                  <span className="expand-placeholder" />
+                  <input type="checkbox" checked={mainCategoryEditorParentId === '0'} readOnly />
+                  <span className="main-tree-name">Корень</span>
+                </button>
+                {mainCategoryEditorParentTree.map((node) => (
+                  <CategoryParentPickerNode
+                    key={node.id}
+                    node={node}
+                    depth={0}
+                    expanded={mainCategoryParentPickerExpanded}
+                    onToggle={toggleMainCategoryParentPickerNode}
+                    selectedParentId={mainCategoryEditorParentId}
+                    onSelectParent={setMainCategoryEditorParentId}
+                  />
+                ))}
+              </div>
+
+              <div className="category-editor-actions">
+                <button className="btn table-btn" type="button" disabled={mainCategoryActionBusy} onClick={submitMainCategoryEditor}>
+                  {mainCategoryEditorMode === 'create' ? 'Сохранить' : 'Сохранить'}
+                </button>
+                <button className="btn table-btn" type="button" disabled={mainCategoryActionBusy} onClick={closeMainCategoryEditor}>
+                  Отмена
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -4411,6 +4879,51 @@ function MainCategoryNode({ node, depth, path, expanded, onToggle, selectedCateg
               onToggle={onToggle}
               selectedCategoryIds={selectedCategoryIds}
               onSelectCategory={onSelectCategory}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CategoryParentPickerNode({ node, depth, expanded, onToggle, selectedParentId, onSelectParent }) {
+  const hasChildren = Array.isArray(node.children) && node.children.length > 0
+  const isOpen = Boolean(expanded[node.id])
+  const isSelected = String(selectedParentId || '').trim() === String(node.id || '').trim()
+  const selectCurrent = () => onSelectParent(String(node.id || '').trim())
+
+  return (
+    <div className="main-tree-node" style={{ paddingLeft: depth * 16 }}>
+      <button type="button" className={`category-parent-picker-row ${isSelected ? 'selected' : ''}`} onClick={selectCurrent}>
+        {hasChildren ? (
+          <span
+            className="expand-btn"
+            onClick={(event) => {
+              event.stopPropagation()
+              onToggle(node.id)
+            }}
+          >
+            {isOpen ? '−' : '+'}
+          </span>
+        ) : (
+          <span className="expand-placeholder" />
+        )}
+        <input type="checkbox" checked={isSelected} readOnly />
+        <span className="main-tree-name">{node.name}</span>
+      </button>
+
+      {hasChildren && isOpen && (
+        <div className="main-tree-children">
+          {node.children.map((child) => (
+            <CategoryParentPickerNode
+              key={child.id}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              selectedParentId={selectedParentId}
+              onSelectParent={onSelectParent}
             />
           ))}
         </div>

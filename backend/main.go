@@ -82,7 +82,7 @@ func main() {
 	parserService := services.NewParserAppService(parserRepo, eksmoRepo, mainProductRepo, invalidProductRepo)
 
 	// Handlers
-	categoryHandler := handlers.NewCategoryHandler(categoryRepo)
+	categoryHandler := handlers.NewCategoryHandler(categoryRepo, mainProductRepo, categoryLinker, redisClient)
 	eksmoHandler := handlers.NewEksmoProductHandler(
 		eksmoRepo,
 		eksmoService,

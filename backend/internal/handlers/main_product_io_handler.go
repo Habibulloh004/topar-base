@@ -895,7 +895,7 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 	if exportFormat == "xlsx" {
 		err = h.exportMainProductsXLSX(c, ctx, params, requestID, filename, startedAt)
 	} else {
-		err = h.exportMainProductsCSV(c, ctx, params, requestID, filename, startedAt)
+		err = h.exportMainProductsCSV(c, params, requestID, filename, startedAt)
 	}
 	if err != nil {
 		log.Printf("[main_products_export] request_id=%s format=%s error=%q", requestID, exportFormat, err.Error())
@@ -967,14 +967,15 @@ func (h *EksmoProductHandler) ImportMainProducts(c *fiber.Ctx) error {
 
 func (h *EksmoProductHandler) exportMainProductsCSV(
 	c *fiber.Ctx,
-	ctx context.Context,
 	params repository.MainProductFilterParams,
 	requestID string,
 	filename string,
 	startedAt time.Time,
 ) error {
-	cursor, err := h.mainProductRepo.OpenCursorWithFilters(ctx, params, mainProductExportProjection())
+	streamCtx, streamCancel := context.WithTimeout(context.Background(), mainProductsExportTimeout)
+	cursor, err := h.mainProductRepo.OpenCursorWithFilters(streamCtx, params, mainProductExportProjection())
 	if err != nil {
+		streamCancel()
 		return err
 	}
 
@@ -982,7 +983,8 @@ func (h *EksmoProductHandler) exportMainProductsCSV(
 	headers := mainProductExportHeaders()
 
 	go func() {
-		defer cursor.Close(ctx)
+		defer streamCancel()
+		defer cursor.Close(streamCtx)
 		csvWriter := csv.NewWriter(writer)
 
 		closeWithError := func(err error) {
@@ -999,7 +1001,7 @@ func (h *EksmoProductHandler) exportMainProductsCSV(
 		}
 
 		rowCount := 0
-		for cursor.Next(ctx) {
+		for cursor.Next(streamCtx) {
 			var product models.MainProduct
 			if err := cursor.Decode(&product); err != nil {
 				closeWithError(err)

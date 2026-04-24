@@ -52,6 +52,8 @@ type MainProduct struct {
 	PublicationYear int    `bson:"publicationYear,omitempty" json:"publicationYear,omitempty"`
 	ProductWeight   string `bson:"productWeight,omitempty" json:"productWeight,omitempty"`
 	PublisherName   string `bson:"publisherName,omitempty" json:"publisherName,omitempty"`
+	IKPU            string `bson:"ikpu,omitempty" json:"ikpu,omitempty"`
+	Size            string `bson:"size,omitempty" json:"size,omitempty"`
 
 	ISBNNormalized string     `bson:"isbnNormalized,omitempty" json:"-"`
 	Quantity       float64    `bson:"quantity,omitempty" json:"quantity,omitempty"`

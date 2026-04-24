@@ -860,6 +860,8 @@ func (r *MainProductRepository) UpdateByID(ctx context.Context, id primitive.Obj
 	}
 	setOrUnsetString("productWeight", doc.ProductWeight)
 	setOrUnsetString("publisherName", doc.PublisherName)
+	setOrUnsetString("ikpu", doc.IKPU)
+	setOrUnsetString("size", doc.Size)
 	setOrUnsetString("sourceGuidNom", doc.SourceGUIDNOM)
 	setOrUnsetString("sourceGuid", doc.SourceGUID)
 	setOrUnsetString("sourceNomcode", doc.SourceNomCode)
@@ -2198,9 +2200,42 @@ func sanitizeMainProduct(product models.MainProduct, now time.Time) models.MainP
 	}
 	product.ProductWeight = strings.TrimSpace(product.ProductWeight)
 	product.PublisherName = strings.TrimSpace(product.PublisherName)
+	product.IKPU = strings.TrimSpace(product.IKPU)
+	product.Size = normalizeMainProductSizeValue(product.Size)
 	product.CategoryPath = sanitizeStringSlice(product.CategoryPath)
 	product.UpdatedAt = now
 	return product
+}
+
+func normalizeMainProductSizeValue(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, "Х", "x")
+	trimmed = strings.ReplaceAll(trimmed, "х", "x")
+	trimmed = strings.ReplaceAll(trimmed, "X", "x")
+	trimmed = strings.ReplaceAll(trimmed, "*", "x")
+	parts := strings.Split(trimmed, "x")
+	if len(parts) == 1 {
+		return strings.TrimSpace(parts[0])
+	}
+
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	if len(cleaned) == 1 {
+		return cleaned[0]
+	}
+	return cleaned[0] + "x" + cleaned[1]
 }
 
 func sanitizeMainProductAuthorRefs(values []models.EksmoProductAuthorRef) []models.EksmoProductAuthorRef {

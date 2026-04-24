@@ -97,6 +97,8 @@ var mainProductColumns = []mainProductColumn{
 	{Key: "publicationYear", Header: "publication_year"},
 	{Key: "productWeight", Header: "product_weight"},
 	{Key: "publisherName", Header: "publisher_name"},
+	{Key: "ikpu", Header: "ikpu"},
+	{Key: "size", Header: "size"},
 	{Key: "quantity", Header: "quantity"},
 	{Key: "price", Header: "price"},
 	{Key: "categoryId", Header: "category_id"},
@@ -143,6 +145,8 @@ type createMainProductRequest struct {
 	PublicationYear        int                            `json:"publicationYear"`
 	ProductWeight          string                         `json:"productWeight"`
 	PublisherName          string                         `json:"publisherName"`
+	IKPU                   string                         `json:"ikpu"`
+	Size                   string                         `json:"size"`
 	Quantity               float64                        `json:"quantity"`
 	Price                  float64                        `json:"price"`
 	CategoryID             string                         `json:"categoryId"`
@@ -658,6 +662,8 @@ func (h *EksmoProductHandler) buildMainProductFromRequest(req createMainProductR
 		PublicationYear:        publicationYear,
 		ProductWeight:          strings.TrimSpace(req.ProductWeight),
 		PublisherName:          strings.TrimSpace(req.PublisherName),
+		IKPU:                   strings.TrimSpace(req.IKPU),
+		Size:                   normalizeMainProductSize(req.Size),
 		Quantity:               req.Quantity,
 		Price:                  req.Price,
 		CategoryID:             categoryID,
@@ -1194,6 +1200,8 @@ func mainProductExportProjection() bson.M {
 		"publicationYear":        1,
 		"productWeight":          1,
 		"publisherName":          1,
+		"ikpu":                   1,
+		"size":                   1,
 		"quantity":               1,
 		"price":                  1,
 		"categoryId":             1,
@@ -1334,6 +1342,14 @@ func parseMainProductRows(rows [][]string) ([]models.MainProduct, error) {
 		product.PublicationYear = parseMainProductInt(readMainProductCell(row, headerIndex, "publicationYear"))
 		product.ProductWeight = readMainProductCell(row, headerIndex, "productWeight")
 		product.PublisherName = readMainProductCell(row, headerIndex, "publisherName")
+		product.IKPU = readMainProductCell(row, headerIndex, "ikpu")
+		product.Size = normalizeMainProductSize(firstNonEmpty(
+			readMainProductCell(row, headerIndex, "size"),
+			buildMainProductSizeValue(
+				readMainProductCell(row, headerIndex, "sizeWidth"),
+				readMainProductCell(row, headerIndex, "sizeHeight"),
+			),
+		))
 		product.SourceGUIDNOM = readMainProductCell(row, headerIndex, "sourceGuidNom")
 		product.SourceGUID = readMainProductCell(row, headerIndex, "sourceGuid")
 		product.SourceNomCode = readMainProductCell(row, headerIndex, "sourceNomcode")
@@ -1496,6 +1512,16 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 			index["publisherName"] = i
 		case "издатель", "издательство":
 			index["publisherName"] = i
+		case "ikpu", "икпу":
+			index["ikpu"] = i
+		case "size":
+			index["size"] = i
+		case "размер":
+			index["size"] = i
+		case "sizewidth", "width", "ширина":
+			index["sizeWidth"] = i
+		case "sizeheight", "height", "высота":
+			index["sizeHeight"] = i
 		case "quantity", "qty":
 			index["quantity"] = i
 		case "количество", "остаток":
@@ -1515,8 +1541,6 @@ func buildMainProductHeaderIndex(header []string) map[string]int {
 		case "sourceguid", "guid":
 			index["sourceGuid"] = i
 		case "sourcenomcode", "nomcode":
-			index["sourceNomcode"] = i
-		case "икпу", "ikpu":
 			index["sourceNomcode"] = i
 		case "sourceproductid":
 			index["sourceProductId"] = i
@@ -1797,6 +1821,10 @@ func mainProductCSVRow(product models.MainProduct) []string {
 			row = append(row, product.ProductWeight)
 		case "publisherName":
 			row = append(row, product.PublisherName)
+		case "ikpu":
+			row = append(row, product.IKPU)
+		case "size":
+			row = append(row, product.Size)
 		case "quantity":
 			row = append(row, formatMainProductFloat(product.Quantity))
 		case "price":
@@ -1831,6 +1859,52 @@ func formatMainProductFloat(value float64) string {
 		return ""
 	}
 	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func normalizeMainProductSize(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, "Х", "x")
+	trimmed = strings.ReplaceAll(trimmed, "х", "x")
+	trimmed = strings.ReplaceAll(trimmed, "X", "x")
+	trimmed = strings.ReplaceAll(trimmed, "*", "x")
+	parts := strings.Split(trimmed, "x")
+	if len(parts) == 1 {
+		return strings.TrimSpace(parts[0])
+	}
+
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		cleaned = append(cleaned, part)
+	}
+	if len(cleaned) == 0 {
+		return ""
+	}
+	if len(cleaned) == 1 {
+		return cleaned[0]
+	}
+	return cleaned[0] + "x" + cleaned[1]
+}
+
+func buildMainProductSizeValue(width, height string) string {
+	width = strings.TrimSpace(width)
+	height = strings.TrimSpace(height)
+	switch {
+	case width != "" && height != "":
+		return width + "x" + height
+	case width != "":
+		return width
+	case height != "":
+		return height
+	default:
+		return ""
+	}
 }
 
 func stripUTF8BOM(value string) string {

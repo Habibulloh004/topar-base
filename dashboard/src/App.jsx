@@ -139,6 +139,7 @@ let mainProductDraftsMemoryCache = null
 const EMPTY_MAIN_PRODUCT_FORM = {
   name: '',
   isbn: '',
+  ikpu: '',
   authorCover: '',
   authorNames: '',
   authorRefsJson: '',
@@ -171,6 +172,8 @@ const EMPTY_MAIN_PRODUCT_FORM = {
   seriesName: '',
   publicationYear: '',
   productWeight: '',
+  sizeWidth: '',
+  sizeHeight: '',
   publisherName: '',
   categoryPath: '',
   quantity: '',
@@ -716,6 +719,35 @@ function formatOptionalNumberForInput(value) {
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed === 0) return ''
   return String(parsed)
+}
+
+function normalizeSizePart(value) {
+  return String(value || '')
+    .replace(/[хХX*]/g, '')
+    .trim()
+}
+
+function buildMainProductSize(width, height) {
+  const safeWidth = normalizeSizePart(width)
+  const safeHeight = normalizeSizePart(height)
+  if (safeWidth && safeHeight) return `${safeWidth}x${safeHeight}`
+  if (safeWidth) return safeWidth
+  if (safeHeight) return safeHeight
+  return ''
+}
+
+function splitMainProductSize(value) {
+  const normalized = String(value || '')
+    .replace(/[хХX*]/g, 'x')
+    .trim()
+  if (!normalized) {
+    return { width: '', height: '' }
+  }
+  const parts = normalized.split('x').map((item) => item.trim()).filter(Boolean)
+  if (parts.length >= 2) {
+    return { width: parts[0], height: parts[1] }
+  }
+  return { width: parts[0] || normalized, height: '' }
 }
 
 function splitPathValue(value) {
@@ -2683,11 +2715,13 @@ function App() {
     const genreNames = Array.isArray(product?.genreNames) && product.genreNames.length > 0
       ? product.genreNames
       : extractRefNames(genreRefs)
+    const sizeParts = splitMainProductSize(product?.size || '')
 
     setMainProductImageUploading(false)
     const baseForm = {
       name: String(product?.name || ''),
       isbn: String(product?.isbn || ''),
+      ikpu: String(product?.ikpu || ''),
       authorCover: String(product?.authorCover || ''),
       authorNames: authorNames.join(', '),
       authorRefsJson: formatRefsJsonInput(authorRefs),
@@ -2720,6 +2754,8 @@ function App() {
       seriesName: String(product?.seriesName || ''),
       publicationYear: formatOptionalNumberForInput(product?.publicationYear),
       productWeight: String(product?.productWeight || ''),
+      sizeWidth: sizeParts.width,
+      sizeHeight: sizeParts.height,
       publisherName: String(product?.publisherName || ''),
       categoryPath: Array.isArray(product?.categoryPath) ? product.categoryPath.join(' / ') : '',
       quantity: formatOptionalNumberForInput(product?.quantity),
@@ -2964,6 +3000,7 @@ function App() {
     return {
       name: String(form.name || '').trim(),
       isbn: String(form.isbn || '').trim(),
+      ikpu: String(form.ikpu || '').trim(),
       authorCover: String(form.authorCover || '').trim(),
       authorNames,
       authorRefs,
@@ -3006,6 +3043,7 @@ function App() {
       seriesName: String(form.seriesName || '').trim(),
       publicationYear: parseOptionalInteger(form.publicationYear),
       productWeight: String(form.productWeight || '').trim(),
+      size: buildMainProductSize(form.sizeWidth, form.sizeHeight),
       publisherName: String(form.publisherName || '').trim(),
       categoryPath: splitPathValue(form.categoryPath),
       quantity: parseOptionalNumber(form.quantity),
@@ -5172,6 +5210,7 @@ const PRODUCT_FIELD_META = {
   sourceGuidNom: { label: 'GUID NOM источника', hidden: true },
   sourceGuid: { label: 'GUID источника', hidden: true },
   sourceNomcode: { label: 'NOMCODE источника', hidden: true },
+  ikpu: { label: 'ИКПУ' },
   name: { label: 'Название' },
   isbn: { label: 'ISBN' },
   isbnNormalized: { label: 'Нормализованный ISBN', hidden: true },
@@ -5191,6 +5230,7 @@ const PRODUCT_FIELD_META = {
   seriesName: { label: 'Серия' },
   publicationYear: { label: 'Год издания' },
   productWeight: { label: 'Вес товара' },
+  size: { label: 'Размер' },
   publisher: { label: 'Издатель' },
   publisherName: { label: 'Издатель' },
   authorRefs: { label: 'Авторы', hidden: true },
@@ -5296,6 +5336,7 @@ function buildProductDetailRows(product) {
   const preferredOrder = [
     'name',
     'isbn',
+    'ikpu',
     'sourceGuidNom',
     'sourceGuid',
     'sourceNomcode',
@@ -5318,6 +5359,7 @@ function buildProductDetailRows(product) {
     'series',
     'publicationYear',
     'productWeight',
+    'size',
     'publisherName',
     'publisher',
     'authorRefs',
@@ -5721,6 +5763,11 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
               <input type="text" value={form.isbn} onChange={(e) => onChange('isbn', e.target.value)} />
             </label>
 
+            <label className="main-product-field">
+              <span>ИКПУ</span>
+              <input type="text" value={form.ikpu} onChange={(e) => onChange('ikpu', e.target.value)} />
+            </label>
+
             <label className="main-product-field full">
               <span>Авторы (через запятую)</span>
               <input type="text" value={form.authorNames} onChange={(e) => onChange('authorNames', e.target.value)} placeholder="Автор 1, Автор 2" />
@@ -5878,6 +5925,28 @@ function MainProductFormModal({ title, submitLabel, form, statusMessage, categor
             <label className="main-product-field">
               <span>Вес товара</span>
               <input type="text" value={form.productWeight} onChange={(e) => onChange('productWeight', e.target.value)} />
+            </label>
+
+            <label className="main-product-field">
+              <span>Размер</span>
+              <div className="main-product-size-inputs">
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={form.sizeWidth}
+                  onChange={(e) => onChange('sizeWidth', e.target.value)}
+                  placeholder="Ширина"
+                />
+                <span className="main-product-size-separator">x</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={form.sizeHeight}
+                  onChange={(e) => onChange('sizeHeight', e.target.value)}
+                  placeholder="Высота"
+                />
+              </div>
+              <small className="main-product-field-hint">Сохраняется как `120x30`.</small>
             </label>
 
             <label className="main-product-field">

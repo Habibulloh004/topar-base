@@ -26,6 +26,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/xuri/excelize/v2"
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	_ "golang.org/x/image/bmp"
@@ -59,6 +60,8 @@ type validatedMainProductImage struct {
 	DetectedContentType string
 	SHA256              string
 }
+
+const mainProductsExportTimeout = 15 * time.Minute
 
 var mainProductColumns = []mainProductColumn{
 	{Key: "id", Header: "id"},
@@ -834,6 +837,9 @@ func extractMainProductGenreNames(values []models.EksmoProductGenreRef) []string
 }
 
 func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
+	requestID := requestIDFromCtx(c)
+	startedAt := time.Now()
+
 	if h.mainProductRepo == nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "main product repository not configured"})
 	}
@@ -872,34 +878,30 @@ func (h *EksmoProductHandler) ExportMainProducts(c *fiber.Ctx) error {
 		params.IncludeEksmoSources = true
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), mainProductsExportTimeout)
 	defer cancel()
 
-	products, err := h.mainProductRepo.ListAllWithFilters(ctx, params)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
+	filename := fmt.Sprintf("main_products_%s.%s", time.Now().UTC().Format("20060102_150405"), exportFormat)
+	log.Printf(
+		"[main_products_export] request_id=%s ip=%s method=%s format=%s path=%s",
+		requestID,
+		c.IP(),
+		c.Method(),
+		exportFormat,
+		c.OriginalURL(),
+	)
 
-	var content []byte
-	var contentType string
-	var fileExt string
+	var err error
 	if exportFormat == "xlsx" {
-		content, err = buildMainProductsXLSX(products)
-		contentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-		fileExt = "xlsx"
+		err = h.exportMainProductsXLSX(c, ctx, params, requestID, filename, startedAt)
 	} else {
-		content, err = buildMainProductsCSV(products)
-		contentType = "text/csv; charset=utf-8"
-		fileExt = "csv"
+		err = h.exportMainProductsCSV(c, ctx, params, requestID, filename, startedAt)
 	}
 	if err != nil {
+		log.Printf("[main_products_export] request_id=%s format=%s error=%q", requestID, exportFormat, err.Error())
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
-	filename := fmt.Sprintf("main_products_%s.%s", time.Now().UTC().Format("20060102_150405"), fileExt)
-	c.Set("Content-Type", contentType)
-	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	return c.Send(content)
+	return nil
 }
 
 func (h *EksmoProductHandler) ImportMainProducts(c *fiber.Ctx) error {
@@ -963,35 +965,127 @@ func (h *EksmoProductHandler) ImportMainProducts(c *fiber.Ctx) error {
 	})
 }
 
-func buildMainProductsCSV(products []models.MainProduct) ([]byte, error) {
-	var buffer bytes.Buffer
-	writer := csv.NewWriter(&buffer)
-
-	headers := make([]string, 0, len(mainProductColumns))
-	for _, col := range mainProductColumns {
-		headers = append(headers, col.Header)
+func (h *EksmoProductHandler) exportMainProductsCSV(
+	c *fiber.Ctx,
+	ctx context.Context,
+	params repository.MainProductFilterParams,
+	requestID string,
+	filename string,
+	startedAt time.Time,
+) error {
+	cursor, err := h.mainProductRepo.OpenCursorWithFilters(ctx, params, mainProductExportProjection())
+	if err != nil {
+		return err
 	}
-	if err := writer.Write(headers); err != nil {
-		return nil, err
-	}
 
-	for _, product := range products {
-		if err := writer.Write(mainProductCSVRow(product)); err != nil {
-			return nil, err
+	reader, writer := io.Pipe()
+	headers := mainProductExportHeaders()
+
+	go func() {
+		defer cursor.Close(ctx)
+		csvWriter := csv.NewWriter(writer)
+
+		closeWithError := func(err error) {
+			_ = writer.CloseWithError(err)
 		}
-	}
 
-	writer.Flush()
-	if err := writer.Error(); err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
+		if _, err := writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+			closeWithError(err)
+			return
+		}
+		if err := csvWriter.Write(headers); err != nil {
+			closeWithError(err)
+			return
+		}
+
+		rowCount := 0
+		for cursor.Next(ctx) {
+			var product models.MainProduct
+			if err := cursor.Decode(&product); err != nil {
+				closeWithError(err)
+				return
+			}
+			if err := csvWriter.Write(mainProductCSVRow(product)); err != nil {
+				closeWithError(err)
+				return
+			}
+			rowCount++
+			if rowCount%250 == 0 {
+				csvWriter.Flush()
+				if err := csvWriter.Error(); err != nil {
+					closeWithError(err)
+					return
+				}
+			}
+		}
+
+		csvWriter.Flush()
+		if err := csvWriter.Error(); err != nil {
+			closeWithError(err)
+			return
+		}
+		if err := cursor.Err(); err != nil {
+			closeWithError(err)
+			return
+		}
+
+		log.Printf(
+			"[main_products_export] request_id=%s format=csv rows=%d duration=%s",
+			requestID,
+			rowCount,
+			time.Since(startedAt).Round(time.Millisecond),
+		)
+		_ = writer.Close()
+	}()
+
+	c.Set("Content-Type", "text/csv; charset=utf-8")
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Set("Cache-Control", "no-store")
+	c.Set("X-Accel-Buffering", "no")
+	return c.SendStream(reader)
 }
 
-func buildMainProductsXLSX(products []models.MainProduct) ([]byte, error) {
-	book := excelize.NewFile()
-	const sheetName = "main_products"
+func (h *EksmoProductHandler) exportMainProductsXLSX(
+	c *fiber.Ctx,
+	ctx context.Context,
+	params repository.MainProductFilterParams,
+	requestID string,
+	filename string,
+	startedAt time.Time,
+) error {
+	filePath, rowCount, err := h.buildMainProductsXLSXFile(ctx, params)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(filePath)
 
+	log.Printf(
+		"[main_products_export] request_id=%s format=xlsx rows=%d duration=%s",
+		requestID,
+		rowCount,
+		time.Since(startedAt).Round(time.Millisecond),
+	)
+
+	c.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	c.Set("Cache-Control", "no-store")
+	return c.SendFile(filePath)
+}
+
+func (h *EksmoProductHandler) buildMainProductsXLSXFile(
+	ctx context.Context,
+	params repository.MainProductFilterParams,
+) (string, int, error) {
+	cursor, err := h.mainProductRepo.OpenCursorWithFilters(ctx, params, mainProductExportProjection())
+	if err != nil {
+		return "", 0, err
+	}
+	defer cursor.Close(ctx)
+
+	book := excelize.NewFile()
+	defer book.Close()
+
+	const sheetName = "main_products"
 	defaultSheet := book.GetSheetName(0)
 	if defaultSheet == "" {
 		defaultSheet = "Sheet1"
@@ -1000,29 +1094,113 @@ func buildMainProductsXLSX(products []models.MainProduct) ([]byte, error) {
 		book.SetSheetName(defaultSheet, sheetName)
 	}
 
+	streamWriter, err := book.NewStreamWriter(sheetName)
+	if err != nil {
+		return "", 0, err
+	}
+
+	headers := mainProductExportHeaders()
+	headerRow := make([]interface{}, 0, len(headers))
+	for _, header := range headers {
+		headerRow = append(headerRow, header)
+	}
+	if err := streamWriter.SetRow("A1", headerRow); err != nil {
+		return "", 0, err
+	}
+
+	rowIndex := 2
+	for cursor.Next(ctx) {
+		var product models.MainProduct
+		if err := cursor.Decode(&product); err != nil {
+			return "", 0, err
+		}
+		row := mainProductCSVRow(product)
+		values := make([]interface{}, 0, len(row))
+		for _, value := range row {
+			values = append(values, value)
+		}
+		cell, err := excelize.CoordinatesToCellName(1, rowIndex)
+		if err != nil {
+			return "", 0, err
+		}
+		if err := streamWriter.SetRow(cell, values); err != nil {
+			return "", 0, err
+		}
+		rowIndex++
+	}
+	if err := cursor.Err(); err != nil {
+		return "", 0, err
+	}
+	if err := streamWriter.Flush(); err != nil {
+		return "", 0, err
+	}
+
+	tempFile, err := os.CreateTemp("", "main_products_export_*.xlsx")
+	if err != nil {
+		return "", 0, err
+	}
+	defer tempFile.Close()
+
+	if err := book.Write(tempFile); err != nil {
+		os.Remove(tempFile.Name())
+		return "", 0, err
+	}
+
+	return tempFile.Name(), rowIndex - 2, nil
+}
+
+func mainProductExportHeaders() []string {
 	headers := make([]string, 0, len(mainProductColumns))
 	for _, col := range mainProductColumns {
 		headers = append(headers, col.Header)
 	}
+	return headers
+}
 
-	for colIdx, header := range headers {
-		cell, _ := excelize.CoordinatesToCellName(colIdx+1, 1)
-		_ = book.SetCellValue(sheetName, cell, header)
+func mainProductExportProjection() bson.M {
+	return bson.M{
+		"_id":                    1,
+		"name":                   1,
+		"isbn":                   1,
+		"authorCover":            1,
+		"authorNames":            1,
+		"tagNames":               1,
+		"genreNames":             1,
+		"isInfoComplete":         1,
+		"description":            1,
+		"annotation":             1,
+		"coverUrl":               1,
+		"covers":                 1,
+		"ageRestriction":         1,
+		"pages":                  1,
+		"format":                 1,
+		"paperType":              1,
+		"bindingType":            1,
+		"characteristics":        1,
+		"boardGameType":          1,
+		"productType":            1,
+		"targetAudience":         1,
+		"minPlayers":             1,
+		"maxPlayers":             1,
+		"minGameDurationMinutes": 1,
+		"maxGameDurationMinutes": 1,
+		"material":               1,
+		"subjectName":            1,
+		"nicheName":              1,
+		"brandName":              1,
+		"seriesName":             1,
+		"publicationYear":        1,
+		"productWeight":          1,
+		"publisherName":          1,
+		"quantity":               1,
+		"price":                  1,
+		"categoryId":             1,
+		"categoryPath":           1,
+		"sourceGuidNom":          1,
+		"sourceGuid":             1,
+		"sourceNomcode":          1,
+		"sourceProductId":        1,
 	}
-
-	for rowIdx, product := range products {
-		row := mainProductCSVRow(product)
-		for colIdx, value := range row {
-			cell, _ := excelize.CoordinatesToCellName(colIdx+1, rowIdx+2)
-			_ = book.SetCellValue(sheetName, cell, value)
-		}
-	}
-
-	buffer, err := book.WriteToBuffer()
-	if err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
 }
 
 func detectMainProductImportFormat(filename, requested string) string {

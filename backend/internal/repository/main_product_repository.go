@@ -437,6 +437,19 @@ func (r *MainProductRepository) ListAllWithFilters(ctx context.Context, params M
 	return products, nil
 }
 
+func (r *MainProductRepository) OpenCursorWithFilters(
+	ctx context.Context,
+	params MainProductFilterParams,
+	projection interface{},
+) (*mongo.Cursor, error) {
+	filter := buildMainProductFilter(params)
+	opts := options.Find().SetSort(bson.D{{Key: "updatedAt", Value: -1}})
+	if projection != nil {
+		opts.SetProjection(projection)
+	}
+	return r.collection.Find(ctx, filter, opts)
+}
+
 func (r *MainProductRepository) ListSourceCategoryPaths(ctx context.Context) ([][]string, error) {
 	type categoryDoc struct {
 		CategoryPath  []string          `bson:"categoryPath"`

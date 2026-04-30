@@ -25,10 +25,10 @@ func NewReviewHandler(reviewRepo *repository.ReviewRepository, jwtSecret string)
 
 func (h *ReviewHandler) RegisterRoutes(app *fiber.App) {
 	auth := middleware.Auth(h.jwtSecret)
-	app.Get("/api/products/:id/reviews", h.GetProductReviews)
-	app.Post("/api/products/:id/reviews", auth, h.CreateReview)
-	app.Put("/api/reviews/:id", auth, h.UpdateReview)
-	app.Delete("/api/reviews/:id", auth, h.DeleteReview)
+	app.Get("/products/:id/reviews", h.GetProductReviews)
+	app.Post("/products/:id/reviews", auth, h.CreateReview)
+	app.Put("/reviews/:id", auth, h.UpdateReview)
+	app.Delete("/reviews/:id", auth, h.DeleteReview)
 }
 
 func (h *ReviewHandler) GetProductReviews(c *fiber.Ctx) error {

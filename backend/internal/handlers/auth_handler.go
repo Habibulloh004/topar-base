@@ -25,7 +25,7 @@ func NewAuthHandler(userRepo *repository.UserRepository, jwtSecret string) *Auth
 }
 
 func (h *AuthHandler) RegisterRoutes(app *fiber.App) {
-	api := app.Group("/api/auth")
+	api := app.Group("/auth")
 	api.Post("/register", h.Register)
 	api.Post("/login", h.Login)
 	api.Post("/logout", middleware.Auth(h.jwtSecret), h.Logout)

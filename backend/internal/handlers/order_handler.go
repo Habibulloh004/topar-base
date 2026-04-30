@@ -44,7 +44,7 @@ func NewOrderHandler(
 
 func (h *OrderHandler) RegisterRoutes(app *fiber.App) {
 	auth := middleware.Auth(h.jwtSecret)
-	orders := app.Group("/api/orders", auth)
+	orders := app.Group("/orders", auth)
 	orders.Post("", h.CreateOrder)
 	orders.Get("", h.GetMyOrders)
 	orders.Get("/:id", h.GetOrderByID)

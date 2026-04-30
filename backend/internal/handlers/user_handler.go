@@ -41,7 +41,7 @@ func NewUserHandler(
 
 func (h *UserHandler) RegisterRoutes(app *fiber.App) {
 	auth := middleware.Auth(h.jwtSecret)
-	me := app.Group("/api/users/me", auth)
+	me := app.Group("/users/me", auth)
 	me.Get("", h.GetMe)
 	me.Put("", h.UpdateMe)
 	me.Put("/password", h.ChangePassword)

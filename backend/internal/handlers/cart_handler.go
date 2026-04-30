@@ -29,7 +29,7 @@ func NewCartHandler(
 
 func (h *CartHandler) RegisterRoutes(app *fiber.App) {
 	auth := middleware.Auth(h.jwtSecret)
-	cart := app.Group("/api/cart", auth)
+	cart := app.Group("/cart", auth)
 	cart.Get("", h.GetCart)
 	cart.Post("/items", h.AddItem)
 	cart.Put("/items/:productId", h.UpdateItemQty)

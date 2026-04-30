@@ -20,7 +20,7 @@ func NewGiftCertificateHandler(repo *repository.GiftCertificateRepository) *Gift
 }
 
 func (h *GiftCertificateHandler) RegisterRoutes(app *fiber.App) {
-	g := app.Group("/api/gift-certificates")
+	g := app.Group("/gift-certificates")
 	g.Get("", h.ListActive)
 	g.Get("/:id", h.GetByID)
 }

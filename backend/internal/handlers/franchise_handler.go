@@ -20,7 +20,7 @@ func NewFranchiseHandler(repo *repository.FranchiseRepository) *FranchiseHandler
 }
 
 func (h *FranchiseHandler) RegisterRoutes(app *fiber.App) {
-	f := app.Group("/api/franchises")
+	f := app.Group("/franchises")
 	f.Get("", h.List)
 	f.Get("/cities", h.ListCities)
 	f.Get("/:id", h.GetByID)

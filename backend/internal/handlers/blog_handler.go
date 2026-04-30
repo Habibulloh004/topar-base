@@ -22,7 +22,7 @@ func NewBlogHandler(postRepo *repository.BlogPostRepository, categoryRepo *repos
 }
 
 func (h *BlogHandler) RegisterRoutes(app *fiber.App) {
-	blog := app.Group("/api/blog")
+	blog := app.Group("/blog")
 	blog.Get("/categories", h.ListCategories)
 	blog.Get("/posts/popular", h.ListPopularPosts)
 	blog.Get("/posts", h.ListPosts)

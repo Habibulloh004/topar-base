@@ -74,6 +74,18 @@ func main() {
 	subjectRepo := repository.NewEksmoSubjectRepository(database)
 	nicheRepo := repository.NewEksmoNicheRepository(database)
 
+	// E-commerce repositories
+	userRepo := repository.NewUserRepository(database)
+	userAddressRepo := repository.NewUserAddressRepository(database)
+	reviewRepo := repository.NewReviewRepository(database)
+	cartRepo := repository.NewCartRepository(database)
+	orderRepo := repository.NewOrderRepository(database)
+	userBookRepo := repository.NewUserBookRepository(database)
+	franchiseRepo := repository.NewFranchiseRepository(database)
+	giftCertRepo := repository.NewGiftCertificateRepository(database)
+	blogCategoryRepo := repository.NewBlogCategoryRepository(database)
+	blogPostRepo := repository.NewBlogPostRepository(database)
+
 	// Services
 	eksmoService := services.NewEksmoService(cfg, syncStateRepo)
 	categoryLinker := services.NewCategoryLinker(categoryRepo)
@@ -101,6 +113,16 @@ func main() {
 		cfg.RedisCacheTTL,
 	)
 	parserHandler := handlers.NewParserAppHandler(parserRepo, parserService, redisClient)
+
+	// E-commerce handlers
+	authHandler := handlers.NewAuthHandler(userRepo, cfg.JWTSecret)
+	userHandler := handlers.NewUserHandler(userRepo, userAddressRepo, orderRepo, userBookRepo, cfg.JWTSecret)
+	reviewHandler := handlers.NewReviewHandler(reviewRepo, cfg.JWTSecret)
+	cartHandler := handlers.NewCartHandler(cartRepo, mainProductRepo, cfg.JWTSecret)
+	orderHandler := handlers.NewOrderHandler(orderRepo, cartRepo, mainProductRepo, userAddressRepo, userBookRepo, cfg.JWTSecret)
+	franchiseHandler := handlers.NewFranchiseHandler(franchiseRepo)
+	giftCertHandler := handlers.NewGiftCertificateHandler(giftCertRepo)
+	blogHandler := handlers.NewBlogHandler(blogPostRepo, blogCategoryRepo)
 
 	app := fiber.New(fiber.Config{
 		BodyLimit: 64 * 1024 * 1024, // Allow multiple high-resolution image uploads in one request.
@@ -176,6 +198,15 @@ func main() {
 		if err := invalidProductRepo.EnsureIndexes(indexCtx); err != nil {
 			log.Printf("warning: failed to ensure invalid product indexes: %v", err)
 		}
+		if err := userRepo.EnsureIndexes(indexCtx); err != nil {
+			log.Printf("warning: failed to ensure user indexes: %v", err)
+		}
+		if err := reviewRepo.EnsureIndexes(indexCtx); err != nil {
+			log.Printf("warning: failed to ensure review indexes: %v", err)
+		}
+		if err := userBookRepo.EnsureIndexes(indexCtx); err != nil {
+			log.Printf("warning: failed to ensure user book indexes: %v", err)
+		}
 	}()
 
 	app.Get("/health", func(c *fiber.Ctx) error {
@@ -189,6 +220,15 @@ func main() {
 	categoryHandler.RegisterRoutes(app)
 	eksmoHandler.RegisterRoutes(app)
 	parserHandler.RegisterRoutes(app)
+
+	authHandler.RegisterRoutes(app)
+	userHandler.RegisterRoutes(app)
+	reviewHandler.RegisterRoutes(app)
+	cartHandler.RegisterRoutes(app)
+	orderHandler.RegisterRoutes(app)
+	franchiseHandler.RegisterRoutes(app)
+	giftCertHandler.RegisterRoutes(app)
+	blogHandler.RegisterRoutes(app)
 
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

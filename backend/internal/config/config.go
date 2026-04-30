@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -34,6 +35,8 @@ type Config struct {
 	BillzTargetShop  string
 	BillzTimeoutS    int
 	BillzSyncEvery   time.Duration
+
+	JWTSecret string
 }
 
 func Load() Config {
@@ -41,6 +44,11 @@ func Load() Config {
 	eksmoAPIKeys := getEnvCSV("EKSMO_API_KEYS")
 	if len(eksmoAPIKeys) == 0 && strings.TrimSpace(eksmoAPIKey) != "" {
 		eksmoAPIKeys = []string{strings.TrimSpace(eksmoAPIKey)}
+	}
+
+	jwtSecret := normalizeEnvValue(os.Getenv("JWT_SECRET"))
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET must be set")
 	}
 
 	return Config{
@@ -70,6 +78,8 @@ func Load() Config {
 		BillzTargetShop:  getEnv("BILLZ_TARGET_SHOP", "topar"),
 		BillzTimeoutS:    getEnvInt("BILLZ_TIMEOUT_SECONDS", 60),
 		BillzSyncEvery:   getEnvDuration("BILLZ_SYNC_INTERVAL", time.Hour),
+
+		JWTSecret: jwtSecret,
 	}
 }
 

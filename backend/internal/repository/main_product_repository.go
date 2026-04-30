@@ -965,6 +965,15 @@ func (r *MainProductRepository) DeleteByID(ctx context.Context, id primitive.Obj
 	return &deleted, true, nil
 }
 
+func (r *MainProductRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*models.MainProduct, error) {
+	var product models.MainProduct
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&product)
+	if err != nil {
+		return nil, err
+	}
+	return &product, nil
+}
+
 func (r *MainProductRepository) ListByIDs(ctx context.Context, ids []primitive.ObjectID) ([]models.MainProduct, error) {
 	if len(ids) == 0 {
 		return []models.MainProduct{}, nil
